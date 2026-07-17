@@ -3,7 +3,10 @@
     Launches a graphical interface (WinForms) for sqmDataTransfer.
 
 .DESCRIPTION
-    Lets the user pick a source and target instance/database, load and select tables, choose
+    Lets the user connect to a source and target instance (Verbinden button tests connectivity
+    and fills the database dropdown), load tables from the source (showing for each whether it
+    already exists on the target - Transfer - or needs to be created - Anlegen), select tables
+    (individually, or via Alle/Keine), see the source row count for any checked table, choose
     transfer options (script+create missing tables, disable/enable FKs and indexes, truncate,
     revalidate FKs on re-enable, batch size, simulate/WhatIf) and run Invoke-sqmTableTransfer.
     The step-by-step log for the run and the structured per-table/per-step result table are shown
@@ -78,12 +81,12 @@ function Show-sqmTableTransferGui
 	# --- Main form ---------------------------------------------------------------
 	$form = New-Object System.Windows.Forms.Form
 	$form.Text = 'sqmDataTransfer'
-	$form.Size = New-Object System.Drawing.Size(980, 860)
+	$form.Size = New-Object System.Drawing.Size(980, 900)
 	$form.StartPosition = 'CenterScreen'
 	$form.BackColor = $cPanel
 	$form.ForeColor = $cText
 	$form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-	$form.MinimumSize = New-Object System.Drawing.Size(820, 600)
+	$form.MinimumSize = New-Object System.Drawing.Size(820, 640)
 
 	# --- Helper: instance/database/credential panel -------------------------------
 	function New-InstancePanel($title, $x, $y, $width)
@@ -103,25 +106,43 @@ function Show-sqmTableTransferGui
 		$txtInst = New-Object System.Windows.Forms.TextBox
 		Style-TextBox $txtInst
 		$txtInst.Location = New-Object System.Drawing.Point(105, 22)
-		$txtInst.Size = New-Object System.Drawing.Size(($width - 120), 22)
+		$txtInst.Size = New-Object System.Drawing.Size(($width - 210), 22)
 		$txtInst.Anchor = 'Top,Left,Right'
+
+		$btnConnect = New-Object System.Windows.Forms.Button
+		$btnConnect.Text = 'Verbinden'
+		Style-Button $btnConnect
+		$btnConnect.Location = New-Object System.Drawing.Point(($width - 95), 21)
+		$btnConnect.Size = New-Object System.Drawing.Size(85, 24)
+		$btnConnect.Anchor = 'Top,Right'
 
 		$lblDb = New-Object System.Windows.Forms.Label
 		$lblDb.Text = 'Datenbank:'
 		$lblDb.Location = New-Object System.Drawing.Point(10, 52)
 		$lblDb.Size = New-Object System.Drawing.Size(90, 20)
 		$lblDb.ForeColor = $cDim
-		$txtDb = New-Object System.Windows.Forms.TextBox
-		Style-TextBox $txtDb
-		$txtDb.Location = New-Object System.Drawing.Point(105, 49)
-		$txtDb.Size = New-Object System.Drawing.Size(($width - 120), 22)
-		$txtDb.Anchor = 'Top,Left,Right'
+		$cmbDb = New-Object System.Windows.Forms.ComboBox
+		$cmbDb.DropDownStyle = 'DropDown'
+		$cmbDb.BackColor = $cWindow
+		$cmbDb.ForeColor = $cText
+		$cmbDb.FlatStyle = 'Flat'
+		$cmbDb.Location = New-Object System.Drawing.Point(105, 49)
+		$cmbDb.Size = New-Object System.Drawing.Size(($width - 120), 22)
+		$cmbDb.Anchor = 'Top,Left,Right'
 
 		$chkSqlAuth = New-Object System.Windows.Forms.CheckBox
 		$chkSqlAuth.Text = 'SQL-Authentifizierung'
 		$chkSqlAuth.ForeColor = $cText
 		$chkSqlAuth.Location = New-Object System.Drawing.Point(10, 78)
 		$chkSqlAuth.Size = New-Object System.Drawing.Size(180, 22)
+
+		$lblConnStatus = New-Object System.Windows.Forms.Label
+		$lblConnStatus.Text = ''
+		$lblConnStatus.Location = New-Object System.Drawing.Point(195, 78)
+		$lblConnStatus.Size = New-Object System.Drawing.Size(($width - 210), 22)
+		$lblConnStatus.Anchor = 'Top,Left,Right'
+		$lblConnStatus.ForeColor = $cDim
+		$lblConnStatus.AutoEllipsis = $true
 
 		$lblUser = New-Object System.Windows.Forms.Label
 		$lblUser.Text = 'Login:'
@@ -153,16 +174,48 @@ function Show-sqmTableTransferGui
 				$txtPass.Enabled = $chkSqlAuth.Checked
 			}.GetNewClosure())
 
-		$grp.Controls.AddRange(@($lblInst, $txtInst, $lblDb, $txtDb, $chkSqlAuth, $lblUser, $txtUser, $lblPass, $txtPass))
-
-		[PSCustomObject]@{
+		$panel = [PSCustomObject]@{
 			GroupBox = $grp
 			Instance = $txtInst
-			Database = $txtDb
+			Database = $cmbDb
 			SqlAuth  = $chkSqlAuth
 			User	 = $txtUser
 			Pass	 = $txtPass
+			Status   = $lblConnStatus
 		}
+
+		$btnConnect.Add_Click({
+				$lblConnStatus.ForeColor = $cDim
+				$lblConnStatus.Text = 'Verbinde...'
+				$form.Refresh()
+				[System.Windows.Forms.Application]::DoEvents()
+				try
+				{
+					$connParams = @{ SqlInstance = $txtInst.Text; ErrorAction = 'Stop' }
+					if ($chkSqlAuth.Checked -and $txtUser.Text)
+					{
+						$securePass = ConvertTo-SecureString $txtPass.Text -AsPlainText -Force
+						$connParams['SqlCredential'] = New-Object System.Management.Automation.PSCredential($txtUser.Text, $securePass)
+					}
+					$srv = Connect-DbaInstance @connParams
+					$dbNames = @(Get-DbaDatabase -SqlInstance $srv | Sort-Object Name | Select-Object -ExpandProperty Name)
+					$currentText = $cmbDb.Text
+					$cmbDb.Items.Clear()
+					foreach ($n in $dbNames) { $cmbDb.Items.Add($n) | Out-Null }
+					if ($currentText) { $cmbDb.Text = $currentText }
+					$lblConnStatus.ForeColor = $cOk
+					$lblConnStatus.Text = "verbunden ($($dbNames.Count) DBs, $($srv.VersionString))"
+				}
+				catch
+				{
+					$lblConnStatus.ForeColor = $cErr
+					$lblConnStatus.Text = "Fehler: $($_.Exception.Message)"
+				}
+			}.GetNewClosure())
+
+		$grp.Controls.AddRange(@($lblInst, $txtInst, $btnConnect, $lblDb, $cmbDb, $chkSqlAuth, $lblConnStatus, $lblUser, $txtUser, $lblPass, $txtPass))
+
+		$panel
 	}
 
 	$srcPanel = New-InstancePanel 'Quelle (Source)' 12 12 460
@@ -180,12 +233,24 @@ function Show-sqmTableTransferGui
 		return $null
 	}
 
-	# --- Table list + Load button --------------------------------------------------
+	# --- Table list + Load/Select buttons ------------------------------------------
 	$lblTables = New-Object System.Windows.Forms.Label
-	$lblTables.Text = 'Tabellen (aus Quelle laden, dann auswaehlen):'
+	$lblTables.Text = 'Tabellen:'
 	$lblTables.Location = New-Object System.Drawing.Point(12, 196)
-	$lblTables.Size = New-Object System.Drawing.Size(340, 20)
+	$lblTables.Size = New-Object System.Drawing.Size(70, 20)
 	$lblTables.ForeColor = $cDim
+
+	$btnSelectAll = New-Object System.Windows.Forms.Button
+	$btnSelectAll.Text = 'Alle'
+	Style-Button $btnSelectAll
+	$btnSelectAll.Location = New-Object System.Drawing.Point(85, 192)
+	$btnSelectAll.Size = New-Object System.Drawing.Size(65, 26)
+
+	$btnSelectNone = New-Object System.Windows.Forms.Button
+	$btnSelectNone.Text = 'Keine'
+	Style-Button $btnSelectNone
+	$btnSelectNone.Location = New-Object System.Drawing.Point(155, 192)
+	$btnSelectNone.Size = New-Object System.Drawing.Size(65, 26)
 
 	$btnLoadTables = New-Object System.Windows.Forms.Button
 	$btnLoadTables.Text = 'Tabellen laden'
@@ -194,27 +259,67 @@ function Show-sqmTableTransferGui
 	$btnLoadTables.Size = New-Object System.Drawing.Size(120, 26)
 	$btnLoadTables.Anchor = 'Top,Right'
 
-	$clbTables = New-Object System.Windows.Forms.CheckedListBox
-	$clbTables.Location = New-Object System.Drawing.Point(12, 220)
-	$clbTables.Size = New-Object System.Drawing.Size(938, 110)
-	$clbTables.Anchor = 'Top,Left,Right'
-	$clbTables.BackColor = $cWindow
-	$clbTables.ForeColor = $cText
-	$clbTables.CheckOnClick = $true
-	$clbTables.BorderStyle = 'FixedSingle'
+	# Tabellen-Grid: Checkbox | Tabelle | Aktion (Anlegen/Transfer-Symbol) | Zeilen (Quelle, lazy)
+	$dgvTables = New-Object System.Windows.Forms.DataGridView
+	$dgvTables.Location = New-Object System.Drawing.Point(12, 220)
+	$dgvTables.Size = New-Object System.Drawing.Size(938, 150)
+	$dgvTables.Anchor = 'Top,Left,Right'
+	$dgvTables.BackgroundColor = $cWindow
+	$dgvTables.ForeColor = [System.Drawing.Color]::Black
+	$dgvTables.AllowUserToAddRows = $false
+	$dgvTables.AllowUserToDeleteRows = $false
+	$dgvTables.RowHeadersVisible = $false
+	$dgvTables.SelectionMode = 'FullRowSelect'
+	$dgvTables.AutoSizeColumnsMode = 'None'
+	$dgvTables.EditMode = 'EditOnEnter'
 
-	$form.Controls.AddRange(@($lblTables, $btnLoadTables, $clbTables))
+	$colChk = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
+	$colChk.Name = 'Chk'; $colChk.HeaderText = ''; $colChk.Width = 32
+	$colName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+	$colName.Name = 'TableName'; $colName.HeaderText = 'Tabelle'; $colName.ReadOnly = $true
+	$colName.AutoSizeMode = 'Fill'
+	$colAction = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+	$colAction.Name = 'Action'; $colAction.HeaderText = 'Aktion'; $colAction.ReadOnly = $true; $colAction.Width = 110
+	$colRows = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+	$colRows.Name = 'RowCount'; $colRows.HeaderText = 'Zeilen (Quelle)'; $colRows.ReadOnly = $true; $colRows.Width = 120
+	$colRows.DefaultCellStyle.Alignment = 'MiddleRight'
+
+	$dgvTables.Columns.AddRange([System.Windows.Forms.DataGridViewColumn[]]@($colChk, $colName, $colAction, $colRows))
+
+	$form.Controls.AddRange(@($lblTables, $btnSelectAll, $btnSelectNone, $btnLoadTables, $dgvTables))
 
 	$btnLoadTables.Add_Click({
-			$clbTables.Items.Clear()
+			$dgvTables.Rows.Clear()
 			try
 			{
-				$connParams = @{ SqlInstance = $srcPanel.Instance.Text; Database = $srcPanel.Database.Text; ErrorAction = 'Stop' }
-				$cred = Get-CredentialFromPanel $srcPanel
-				if ($cred) { $connParams['SqlCredential'] = $cred }
-				$tables = Get-DbaDbTable @connParams | Sort-Object Schema, Name
-				foreach ($tbl in $tables) { $clbTables.Items.Add("$($tbl.Schema).$($tbl.Name)") | Out-Null }
-				if ($clbTables.Items.Count -eq 0)
+				$srcCred = Get-CredentialFromPanel $srcPanel
+				$srcConnParams = @{ SqlInstance = $srcPanel.Instance.Text; Database = $srcPanel.Database.Text; ErrorAction = 'Stop' }
+				if ($srcCred) { $srcConnParams['SqlCredential'] = $srcCred }
+				$tables = Get-DbaDbTable @srcConnParams | Sort-Object Schema, Name
+
+				# Bestehende Tabellen im Ziel ermitteln (best effort - Ziel evtl. noch nicht befuellt/erreichbar)
+				$dstExisting = $null
+				if ($dstPanel.Instance.Text -and $dstPanel.Database.Text)
+				{
+					try
+					{
+						$dstCred = Get-CredentialFromPanel $dstPanel
+						$dstConnParams = @{ SqlInstance = $dstPanel.Instance.Text; Database = $dstPanel.Database.Text; ErrorAction = 'Stop' }
+						if ($dstCred) { $dstConnParams['SqlCredential'] = $dstCred }
+						$dstExisting = @(Get-DbaDbTable @dstConnParams | ForEach-Object { "$($_.Schema).$($_.Name)" })
+					}
+					catch { $dstExisting = $null }
+				}
+
+				foreach ($tbl in $tables)
+				{
+					$fullName = "$($tbl.Schema).$($tbl.Name)"
+					$action = if ($null -eq $dstExisting) { '?' }
+					elseif ($dstExisting -contains $fullName) { '-> Transfer' }
+					else { '+ Anlegen' }
+					$dgvTables.Rows.Add($false, $fullName, $action, '') | Out-Null
+				}
+				if ($dgvTables.Rows.Count -eq 0)
 				{
 					[System.Windows.Forms.MessageBox]::Show('Keine Tabellen in dieser Datenbank gefunden.', 'sqmDataTransfer', 'OK', 'Information') | Out-Null
 				}
@@ -225,11 +330,59 @@ function Show-sqmTableTransferGui
 			}
 		})
 
+	# Checkbox-Klicks committen erst beim Verlassen der Zelle - sofort commiten, damit
+	# CellValueChanged fuer die Zeilenzahl-Abfrage direkt nach dem Klick feuert.
+	$dgvTables.Add_CurrentCellDirtyStateChanged({
+			if ($dgvTables.IsCurrentCellDirty -and $dgvTables.CurrentCell -is [System.Windows.Forms.DataGridViewCheckBoxCell])
+			{
+				$dgvTables.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit)
+			}
+		})
+
+	# "Alle"/"Keine" setzen viele Checkboxen auf einmal - waehrenddessen keine Zeilenzahl
+	# abfragen (koennte bei vielen Tabellen lange dauern); nur ein direkter Einzelklick
+	# durch den Anwender loest die Lazy-Abfrage aus.
+	$suppressRowCountFetch = $false
+
+	$dgvTables.Add_CellValueChanged({
+			param ($senderObj, $e)
+			if ($suppressRowCountFetch -or $e.RowIndex -lt 0 -or $e.ColumnIndex -ne 0) { return }
+			$row = $dgvTables.Rows[$e.RowIndex]
+			if (-not [bool]$row.Cells[0].Value) { return }
+			if ($row.Cells[3].Value) { return }
+			$tableName = $row.Cells[1].Value
+			try
+			{
+				$parts = $tableName -split '\.', 2
+				$cred = Get-CredentialFromPanel $srcPanel
+				$connParams = @{ SqlInstance = $srcPanel.Instance.Text; Database = $srcPanel.Database.Text; ErrorAction = 'Stop' }
+				if ($cred) { $connParams['SqlCredential'] = $cred }
+				$q = "SELECT COUNT_BIG(*) AS [RowCount] FROM [$($parts[0])].[$($parts[1])]"
+				$cnt = (Invoke-DbaQuery @connParams -Query $q -As PSObject -EnableException).RowCount
+				$row.Cells[3].Value = "$cnt"
+			}
+			catch
+			{
+				$row.Cells[3].Value = '?'
+			}
+		})
+
+	$btnSelectAll.Add_Click({
+			$suppressRowCountFetch = $true
+			foreach ($row in $dgvTables.Rows) { $row.Cells[0].Value = $true }
+			$suppressRowCountFetch = $false
+		})
+	$btnSelectNone.Add_Click({
+			$suppressRowCountFetch = $true
+			foreach ($row in $dgvTables.Rows) { $row.Cells[0].Value = $false }
+			$suppressRowCountFetch = $false
+		})
+
 	# --- Options ---------------------------------------------------------------
 	$grpOpt = New-Object System.Windows.Forms.GroupBox
 	$grpOpt.Text = 'Optionen'
 	$grpOpt.ForeColor = $cText
-	$grpOpt.Location = New-Object System.Drawing.Point(12, 340)
+	$grpOpt.Location = New-Object System.Drawing.Point(12, 380)
 	$grpOpt.Size = New-Object System.Drawing.Size(938, 140)
 	$grpOpt.Anchor = 'Top,Left,Right'
 
@@ -303,7 +456,7 @@ function Show-sqmTableTransferGui
 	$grpReport = New-Object System.Windows.Forms.GroupBox
 	$grpReport.Text = 'HTML-Bericht (wird immer erzeugt)'
 	$grpReport.ForeColor = $cText
-	$grpReport.Location = New-Object System.Drawing.Point(12, 490)
+	$grpReport.Location = New-Object System.Drawing.Point(12, 530)
 	$grpReport.Size = New-Object System.Drawing.Size(938, 58)
 	$grpReport.Anchor = 'Top,Left,Right'
 
@@ -348,19 +501,19 @@ function Show-sqmTableTransferGui
 	$btnRun.Text = 'Transfer starten'
 	Style-Button $btnRun
 	$btnRun.BackColor = $cAccent
-	$btnRun.Location = New-Object System.Drawing.Point(12, 560)
+	$btnRun.Location = New-Object System.Drawing.Point(12, 600)
 	$btnRun.Size = New-Object System.Drawing.Size(160, 32)
 
 	$btnClose = New-Object System.Windows.Forms.Button
 	$btnClose.Text = 'Schliessen'
 	Style-Button $btnClose
-	$btnClose.Location = New-Object System.Drawing.Point(182, 560)
+	$btnClose.Location = New-Object System.Drawing.Point(182, 600)
 	$btnClose.Size = New-Object System.Drawing.Size(100, 32)
 	$btnClose.Add_Click({ $form.Close() })
 
 	$lblStatus = New-Object System.Windows.Forms.Label
 	$lblStatus.Text = ''
-	$lblStatus.Location = New-Object System.Drawing.Point(300, 566)
+	$lblStatus.Location = New-Object System.Drawing.Point(300, 606)
 	$lblStatus.Size = New-Object System.Drawing.Size(650, 22)
 	$lblStatus.Anchor = 'Top,Left,Right'
 	$lblStatus.ForeColor = $cDim
@@ -370,12 +523,12 @@ function Show-sqmTableTransferGui
 	# --- Log output ----------------------------------------------------------------
 	$lblLog = New-Object System.Windows.Forms.Label
 	$lblLog.Text = 'Protokoll:'
-	$lblLog.Location = New-Object System.Drawing.Point(12, 600)
+	$lblLog.Location = New-Object System.Drawing.Point(12, 640)
 	$lblLog.Size = New-Object System.Drawing.Size(200, 20)
 	$lblLog.ForeColor = $cDim
 
 	$txtLog = New-Object System.Windows.Forms.TextBox
-	$txtLog.Location = New-Object System.Drawing.Point(12, 622)
+	$txtLog.Location = New-Object System.Drawing.Point(12, 662)
 	$txtLog.Size = New-Object System.Drawing.Size(938, 90)
 	$txtLog.Anchor = 'Top,Left,Right'
 	$txtLog.Multiline = $true
@@ -390,13 +543,13 @@ function Show-sqmTableTransferGui
 	# --- Result grid -----------------------------------------------------------
 	$lblGrid = New-Object System.Windows.Forms.Label
 	$lblGrid.Text = 'Ergebnis (je Tabelle/Schritt):'
-	$lblGrid.Location = New-Object System.Drawing.Point(12, 718)
+	$lblGrid.Location = New-Object System.Drawing.Point(12, 758)
 	$lblGrid.Size = New-Object System.Drawing.Size(300, 20)
 	$lblGrid.ForeColor = $cDim
 	$lblGrid.Anchor = 'Bottom,Left'
 
 	$dgv = New-Object System.Windows.Forms.DataGridView
-	$dgv.Location = New-Object System.Drawing.Point(12, 740)
+	$dgv.Location = New-Object System.Drawing.Point(12, 780)
 	$dgv.Size = New-Object System.Drawing.Size(938, 70)
 	$dgv.Anchor = 'Bottom,Top,Left,Right'
 	$dgv.BackgroundColor = $cWindow
@@ -412,7 +565,7 @@ function Show-sqmTableTransferGui
 
 	# --- Run handler -----------------------------------------------------------
 	$btnRun.Add_Click({
-			$selectedTables = @($clbTables.CheckedItems)
+			$selectedTables = @(foreach ($row in $dgvTables.Rows) { if ([bool]$row.Cells[0].Value) { $row.Cells[1].Value } })
 			if ($selectedTables.Count -eq 0)
 			{
 				[System.Windows.Forms.MessageBox]::Show('Bitte mindestens eine Tabelle auswaehlen.', 'sqmDataTransfer', 'OK', 'Warning') | Out-Null
@@ -486,6 +639,15 @@ function Show-sqmTableTransferGui
 			{
 				$btnRun.Enabled = $true
 			}
+		})
+
+	# Beim Oeffnen zuverlaessig in den Vordergrund holen (auch wenn aus einer
+	# Hintergrund-/Terminal-Session gestartet) - TopMost kurz an/aus erzwingt das
+	# Nach-vorne-Holen einmalig, ohne das Fenster dauerhaft "immer im Vordergrund" zu pinnen.
+	$form.Add_Shown({
+			$form.Activate()
+			$form.TopMost = $true
+			$form.TopMost = $false
 		})
 
 	[void]$form.ShowDialog()
