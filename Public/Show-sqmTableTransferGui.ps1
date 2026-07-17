@@ -297,58 +297,50 @@ function Show-sqmTableTransferGui
 	$grpOpt.Controls.AddRange(@($chkScriptMeta, $chkFks, $chkIdx, $chkKeepIdentity, $chkTruncate, $chkRevalidate, $chkWhatIf, $lblBatch, $numBatch))
 	$form.Controls.Add($grpOpt)
 
-	# --- HTML report options ---------------------------------------------------
+	# --- HTML report options -----------------------------------------------------
+	# Ein Bericht wird nach jedem Lauf immer erzeugt (wie bei sqmSQLTool) - hier laesst sich nur
+	# der Zielordner ueberschreiben und das automatische Oeffnen abschalten (-NoOpen).
 	$grpReport = New-Object System.Windows.Forms.GroupBox
-	$grpReport.Text = 'Abschliessender HTML-Bericht'
+	$grpReport.Text = 'HTML-Bericht (wird immer erzeugt)'
 	$grpReport.ForeColor = $cText
 	$grpReport.Location = New-Object System.Drawing.Point(12, 490)
 	$grpReport.Size = New-Object System.Drawing.Size(938, 58)
 	$grpReport.Anchor = 'Top,Left,Right'
 
-	$chkHtmlReport = New-Object System.Windows.Forms.CheckBox
-	$chkHtmlReport.Text = 'Bericht erzeugen'
-	$chkHtmlReport.ForeColor = $cText
-	$chkHtmlReport.Checked = $true
-	$chkHtmlReport.Location = New-Object System.Drawing.Point(15, 24)
-	$chkHtmlReport.Size = New-Object System.Drawing.Size(140, 22)
+	$lblReportPath = New-Object System.Windows.Forms.Label
+	$lblReportPath.Text = 'Zielordner:'
+	$lblReportPath.Location = New-Object System.Drawing.Point(15, 27)
+	$lblReportPath.Size = New-Object System.Drawing.Size(90, 20)
+	$lblReportPath.ForeColor = $cDim
 
 	$txtReportPath = New-Object System.Windows.Forms.TextBox
 	Style-TextBox $txtReportPath
-	$txtReportPath.Location = New-Object System.Drawing.Point(160, 22)
-	$txtReportPath.Size = New-Object System.Drawing.Size(590, 22)
+	$txtReportPath.Location = New-Object System.Drawing.Point(110, 24)
+	$txtReportPath.Size = New-Object System.Drawing.Size(640, 22)
 	$txtReportPath.Anchor = 'Top,Left,Right'
-	$defaultOutputPath = Get-sqmTransferConfig -Key 'OutputPath'
-	$txtReportPath.Text = Join-Path $defaultOutputPath "sqmDataTransfer_Report_$(Get-Date -Format 'yyyyMMdd_HHmmss').html"
+	$txtReportPath.Text = Get-sqmTransferConfig -Key 'OutputPath'
 
 	$btnBrowseReport = New-Object System.Windows.Forms.Button
 	$btnBrowseReport.Text = '...'
 	Style-Button $btnBrowseReport
-	$btnBrowseReport.Location = New-Object System.Drawing.Point(755, 21)
+	$btnBrowseReport.Location = New-Object System.Drawing.Point(755, 22)
 	$btnBrowseReport.Size = New-Object System.Drawing.Size(40, 24)
 	$btnBrowseReport.Anchor = 'Top,Right'
 	$btnBrowseReport.Add_Click({
-			$dlg = New-Object System.Windows.Forms.SaveFileDialog
-			$dlg.Filter = 'HTML-Datei (*.html)|*.html'
-			$dlg.FileName = Split-Path $txtReportPath.Text -Leaf
-			$dlg.InitialDirectory = Split-Path $txtReportPath.Text -Parent
-			if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $txtReportPath.Text = $dlg.FileName }
+			$dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+			$dlg.SelectedPath = $txtReportPath.Text
+			if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $txtReportPath.Text = $dlg.SelectedPath }
 		})
 
-	$chkOpenReport = New-Object System.Windows.Forms.CheckBox
-	$chkOpenReport.Text = 'Nach Lauf oeffnen'
-	$chkOpenReport.ForeColor = $cText
-	$chkOpenReport.Checked = $true
-	$chkOpenReport.Location = New-Object System.Drawing.Point(805, 24)
-	$chkOpenReport.Size = New-Object System.Drawing.Size(130, 22)
-	$chkOpenReport.Anchor = 'Top,Right'
+	$chkNoOpen = New-Object System.Windows.Forms.CheckBox
+	$chkNoOpen.Text = 'Nicht automatisch oeffnen'
+	$chkNoOpen.ForeColor = $cText
+	$chkNoOpen.Checked = $false
+	$chkNoOpen.Location = New-Object System.Drawing.Point(805, 26)
+	$chkNoOpen.Size = New-Object System.Drawing.Size(130, 22)
+	$chkNoOpen.Anchor = 'Top,Right'
 
-	$chkHtmlReport.Add_CheckedChanged({
-			$txtReportPath.Enabled = $chkHtmlReport.Checked
-			$btnBrowseReport.Enabled = $chkHtmlReport.Checked
-			$chkOpenReport.Enabled = $chkHtmlReport.Checked
-		}.GetNewClosure())
-
-	$grpReport.Controls.AddRange(@($chkHtmlReport, $txtReportPath, $btnBrowseReport, $chkOpenReport))
+	$grpReport.Controls.AddRange(@($lblReportPath, $txtReportPath, $btnBrowseReport, $chkNoOpen))
 	$form.Controls.Add($grpReport)
 
 	# --- Run / Close buttons ------------------------------------------------------
@@ -459,7 +451,8 @@ function Show-sqmTableTransferGui
 					Confirm			      = $false
 					WhatIf			      = $chkWhatIf.Checked
 				}
-				if ($chkHtmlReport.Checked -and $txtReportPath.Text) { $params['HtmlReportPath'] = $txtReportPath.Text }
+				if ($txtReportPath.Text) { $params['OutputPath'] = $txtReportPath.Text }
+				$params['NoOpen'] = $chkNoOpen.Checked
 
 				$results = Invoke-sqmTableTransfer @params
 
@@ -468,11 +461,6 @@ function Show-sqmTableTransferGui
 				$failCount = @($results | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound')).Count
 				$lblStatus.ForeColor = if ($failCount -gt 0) { $cErr } else { $cOk }
 				$lblStatus.Text = "Fertig - $($results.Count) Schritt(e), $failCount mit Fehler/Mismatch/NotFound."
-
-				if ($chkHtmlReport.Checked -and $txtReportPath.Text -and (Test-Path $txtReportPath.Text) -and $chkOpenReport.Checked)
-				{
-					try { Start-Process $txtReportPath.Text } catch { Write-Warning "Bericht konnte nicht geoeffnet werden: $($_.Exception.Message)" }
-				}
 
 				# Tagesaktuelle Logdatei fuer diese Funktion anzeigen
 				try

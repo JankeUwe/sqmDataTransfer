@@ -74,10 +74,16 @@
 .PARAMETER EnableException
     Throw exceptions immediately (overrides ContinueOnError).
 
-.PARAMETER HtmlReportPath
-    When specified, writes an HTML report to this path after the run (via Export-sqmTransferReport):
-    every processed table plus any missing/failed ones, and a source-vs-destination row-count
-    comparison. Report generation failures are logged/warned but do not fail the transfer itself.
+.PARAMETER OutputPath
+    Folder the HTML report is written to (filename is generated automatically). Same convention
+    as sqmSQLTool's report-generating functions: defaults to Get-sqmTransferConfig -Key
+    'OutputPath' (falling back to "C:\System\WinSrvLog\MSSQL") when not specified - i.e. the same
+    location as sqmSQLTool uses by default. A report is always produced; there is no switch to
+    turn it off. Report generation failures are logged/warned but do not fail the transfer itself.
+
+.PARAMETER NoOpen
+    Do not automatically open the HTML report after the run. Default: opens it (same convention
+    as sqmSQLTool's Invoke-sqmOpenReport / -NoOpen).
 
 .PARAMETER Confirm
 .PARAMETER WhatIf
@@ -86,7 +92,8 @@
     Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales -Destination SQL02 -DestinationDatabase Sales -Table Orders,Customers -ScriptMetadata -Truncate
 
     Scripts and creates missing tables on the target, disables FKs/indexes, copies data, compares
-    row counts and re-enables FKs/indexes for both tables.
+    row counts and re-enables FKs/indexes for both tables. Writes and opens the HTML report from
+    the default OutputPath.
 
 .EXAMPLE
     Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales -Destination SQL02 -DestinationDatabase Sales -Table Orders -WhatIf
@@ -94,10 +101,10 @@
     Simulates the full sequence without making any changes.
 
 .EXAMPLE
-    Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales -Destination SQL02 -DestinationDatabase Sales -Table Orders,Customers,Missing -ScriptMetadata -HtmlReportPath C:\Temp\Transfer.html
+    Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales -Destination SQL02 -DestinationDatabase Sales -Table Orders,Customers,Missing -ScriptMetadata -OutputPath C:\Temp -NoOpen
 
-    Runs the transfer and writes an HTML report listing 'Missing' as not found on the source and
-    comparing row counts for Orders/Customers.
+    Runs the transfer, writes the HTML report into C:\Temp (listing 'Missing' as not found on the
+    source and comparing row counts for Orders/Customers) but does not open it automatically.
 
 .NOTES
     Prerequisites : dbatools, Copy-sqmTableSchema, Disable-sqmTableConstraints,
@@ -151,7 +158,9 @@ function Invoke-sqmTableTransfer
 		[Parameter(Mandatory = $false)]
 		[switch]$EnableException,
 		[Parameter(Mandatory = $false)]
-		[string]$HtmlReportPath
+		[string]$OutputPath,
+		[Parameter(Mandatory = $false)]
+		[switch]$NoOpen
 	)
 
 	begin
@@ -165,6 +174,12 @@ function Invoke-sqmTableTransfer
 		{
 			$BatchSize = Get-sqmTransferConfig -Key 'DefaultBatchSize'
 			if (-not $BatchSize) { $BatchSize = 50000 }
+		}
+
+		if (-not $PSBoundParameters.ContainsKey('OutputPath') -or [string]::IsNullOrWhiteSpace($OutputPath))
+		{
+			$OutputPath = Get-sqmTransferConfig -Key 'OutputPath'
+			if (-not $OutputPath) { $OutputPath = "C:\System\WinSrvLog\MSSQL" }
 		}
 
 		$results = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -363,19 +378,23 @@ function Invoke-sqmTableTransfer
 		Write-sqmTransferLog -Message $summaryMsg -FunctionName $functionName -Level 'INFO'
 		Write-Host $summaryMsg -ForegroundColor $(if ($failCount -gt 0) { 'Yellow' } else { 'Green' })
 
-		if ($HtmlReportPath)
+		try
 		{
-			try
-			{
-				Export-sqmTransferReport -Source $Source -SourceDatabase $SourceDatabase `
-										  -Destination $Destination -DestinationDatabase $DestinationDatabase `
-										  -Results $results -RowCounts $rowCountResults -FilePath $HtmlReportPath
-			}
-			catch
-			{
-				Write-Warning "HTML-Bericht konnte nicht erzeugt werden: $($_.Exception.Message)"
-				Write-sqmTransferLog -Message "HTML-Bericht konnte nicht erzeugt werden: $($_.Exception.Message)" -FunctionName $functionName -Level 'ERROR'
-			}
+			if (-not (Test-Path $OutputPath)) { New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null }
+
+			$safeSource = "$Source.$SourceDatabase" -replace '[\\:.]', '_'
+			$safeDest = "$Destination.$DestinationDatabase" -replace '[\\:.]', '_'
+			$datestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+			$htmlFile = Join-Path $OutputPath "sqmDataTransfer_TransferReport_${safeSource}_to_${safeDest}_${datestamp}.html"
+
+			Export-sqmTransferReport -Source $Source -SourceDatabase $SourceDatabase `
+									  -Destination $Destination -DestinationDatabase $DestinationDatabase `
+									  -Results $results -RowCounts $rowCountResults -FilePath $htmlFile -NoOpen:$NoOpen
+		}
+		catch
+		{
+			Write-Warning "HTML-Bericht konnte nicht erzeugt werden: $($_.Exception.Message)"
+			Write-sqmTransferLog -Message "HTML-Bericht konnte nicht erzeugt werden: $($_.Exception.Message)" -FunctionName $functionName -Level 'ERROR'
 		}
 
 		return $results

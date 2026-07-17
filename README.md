@@ -20,10 +20,13 @@ For a chosen set of tables, `Invoke-sqmTableTransfer` runs:
 Every step is logged to `%LogPath%\sqmDataTransfer_yyyyMMdd_<FunctionName>.log` and returned as a
 structured result object (`Table`, `Step`, `Status`, `Message`, `Timestamp`).
 
-Pass `-HtmlReportPath <path>` to get a self-contained HTML report at the end of the run: every
-processed table plus any that are missing/failed, and a source-vs-destination row-count
-comparison (tables that couldn't be compared, e.g. because the copy itself failed, are shown as
-"nicht verglichen" rather than being silently omitted).
+A self-contained HTML report is **always** written at the end of the run (same convention as
+sqmSQLTool's report-generating functions) - every processed table plus any that are missing/failed,
+and a source-vs-destination row-count comparison (tables that couldn't be compared, e.g. because
+the copy itself failed, are shown as "nicht verglichen" rather than being silently omitted). It is
+written to `-OutputPath` (defaults to `Get-sqmTransferConfig -Key 'OutputPath'`, i.e. the same
+`C:\System\WinSrvLog\MSSQL` location sqmSQLTool uses) and opens automatically in the browser unless
+`-NoOpen` is passed.
 
 ## Functions
 
@@ -67,4 +70,5 @@ Show-sqmTableTransferGui
 - `Enable-sqmTableConstraints` re-detects currently disabled objects on the table - no state
   needs to be passed in from a prior `Disable-sqmTableConstraints` call.
 - Configuration is persisted separately from `sqmSQLTool` (`%APPDATA%\SQLDataTransfer\config.json`)
-  so both modules can be imported side by side without interfering.
+  so both modules can be imported side by side without interfering, but `LogPath`/`OutputPath`
+  default to the same location sqmSQLTool uses (`C:\System\WinSrvLog\MSSQL`).

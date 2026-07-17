@@ -47,6 +47,10 @@
 .PARAMETER Title
     Report heading. Default: 'sqmDataTransfer - Transferbericht'.
 
+.PARAMETER NoOpen
+    Do not automatically open the report after writing it (default: opens in the browser, same
+    convention as sqmSQLTool's report-generating functions).
+
 .PARAMETER PassThru
     Also return the generated HTML as a string.
 
@@ -80,6 +84,8 @@ function Export-sqmTransferReport
 		[string]$FilePath,
 		[Parameter(Mandatory = $false)]
 		[string]$Title = 'sqmDataTransfer - Transferbericht',
+		[Parameter(Mandatory = $false)]
+		[switch]$NoOpen,
 		[Parameter(Mandatory = $false)]
 		[switch]$PassThru
 	)
@@ -251,6 +257,7 @@ $($rowCountRowsHtml.ToString())
 		if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 		[System.IO.File]::WriteAllText($FilePath, $html, (New-Object System.Text.UTF8Encoding($false)))
 		Write-sqmTransferLog -Message "HTML-Bericht geschrieben nach '$FilePath'." -FunctionName $MyInvocation.MyCommand.Name -Level 'INFO'
+		Invoke-sqmTransferOpenReport -HtmlFile $FilePath -NoOpen:$NoOpen
 	}
 	catch
 	{
