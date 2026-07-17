@@ -102,7 +102,7 @@ function Export-sqmTransferReport
 		Where-Object { $_ } | Select-Object -Unique | Sort-Object
 	)
 
-	$problemStatuses = @('Failed', 'NotFound', 'Mismatch')
+	$problemStatuses = @('Failed', 'NotFound', 'Mismatch', 'Blocked')
 	$tableProblems = @{ }
 	foreach ($t in $allTables)
 	{

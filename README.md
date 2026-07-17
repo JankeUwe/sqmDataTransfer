@@ -10,7 +10,19 @@ For a chosen set of tables, `Invoke-sqmTableTransfer` runs:
 
 1. **Script metadata** (optional, `-ScriptMetadata`): scripts the table DDL (columns, PK,
    indexes, foreign keys, defaults, checks) from the source and creates it on the target if it
-   doesn't already exist there. Existing target tables are never dropped/recreated.
+   doesn't already exist there. Existing target tables are never dropped/recreated. This also
+   handles what would otherwise silently break the CREATE on the target:
+     - The destination **schema** is created automatically if missing.
+     - **User-defined types, sequences and FK-referenced tables** the table depends on are scripted
+       automatically too (SMO `WithDependencies`, walks the real dependency graph).
+     - **Partitioned tables** (a non-empty partition scheme) are never auto-scripted - physical
+       storage layout can't be safely inferred for the target - and are reported with a clear
+       `Blocked` status instead of failing with a confusing missing-partition-scheme error.
+     - **CLR user-defined types** are scripted but flagged as a warning: the assembly itself has to
+       be deployed on the target manually.
+     - The destination's **actual SQL Server version** is auto-detected and passed to SMO as
+       `TargetServerVersion`, so scripting from a newer source (e.g. 2022) down to an older target
+       (e.g. 2019) produces syntax the target can run, instead of source-native syntax.
 2. **Disable** foreign keys and non-clustered indexes on the target table.
 3. **Copy data** from source to target (`Copy-DbaDbTableData` under the hood).
 4. **Compare row counts** between source and target.

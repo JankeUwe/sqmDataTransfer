@@ -1,18 +1,37 @@
 <#
 .SYNOPSIS
     Scripts the DDL (CREATE TABLE, primary key, indexes, foreign keys, defaults, checks) of one
-    or more tables from a source instance/database.
+    or more tables from a source instance/database - together with anything else required for the
+    CREATE to actually succeed on a target: the destination schema, and any user-defined types,
+    sequences or FK-referenced tables the table depends on.
 
 .DESCRIPTION
     Connects to the source instance via dbatools (SMO) and uses the SMO Scripter to generate the
     full metadata script for each requested table. The result is an array of independent SQL
-    batches per table (no 'GO' separators needed - each SMO Scripter batch is already a complete,
-    executable statement) plus a combined, human-readable script joined with 'GO' for documentation
-    or -FilePath output.
+    batches (no 'GO' separators needed - each SMO Scripter batch is already a complete, executable
+    statement) plus a combined, human-readable script joined with 'GO' for documentation or
+    -FilePath output.
+
+    Dependency handling (so scripting "just this table" doesn't fail on the target for reasons
+    that have nothing to do with the table's own definition):
+        - Destination schema: a guarded 'IF NOT EXISTS ... CREATE SCHEMA' batch is prepended for
+          each requested table's schema.
+        - User-defined types, sequences, and FK-referenced tables: SMO's WithDependencies option
+          walks the real dependency graph (sys.sql_expression_dependencies) and prepends whatever
+          the table's columns/constraints actually reference, in the correct creation order.
+        - Partitioned tables (a non-empty PartitionSchemeName): physical partition layout is NOT
+          auto-replicated - replicating filegroups/partition functions/schemes safely would require
+          knowing the target's storage layout, which this function has no way to infer. Such tables
+          are reported via -Blocked- instead of producing a script that would fail with a missing
+          partition scheme.
+        - CLR user-defined types: reported as a warning (assembly deployment is out of scope), the
+          table is still scripted but that column's type will not resolve on the target unless the
+          assembly is deployed manually first.
 
     This function only reads from the source; it does not touch the target. Use
     New-sqmTableFromScript to execute the resulting batches against a target instance, or
-    Copy-sqmTableSchema to do both in one call.
+    Copy-sqmTableSchema to do both in one call (which also auto-detects the target's SQL Server
+    version for -TargetServerVersion).
 
 .PARAMETER SqlInstance
     Source SQL Server instance.
@@ -33,6 +52,13 @@
 .PARAMETER IncludeIndexes
     Include non-clustered/clustered indexes in the script. Default: $true.
 
+.PARAMETER TargetServerVersion
+    SMO target version (Microsoft.SqlServer.Management.Smo.SqlServerVersion) to script
+    compatible syntax for - important when the source is a newer SQL Server than the target (e.g.
+    scripting from a 2022 source down to a 2019 target). When omitted, SMO scripts using
+    source-native syntax, which may include features the target doesn't support.
+    Copy-sqmTableSchema sets this automatically from the destination's actual version.
+
 .PARAMETER FilePath
     Optional path to write the combined script to (UTF8, batches separated by 'GO').
 
@@ -41,6 +67,10 @@
 
 .EXAMPLE
     Export-sqmTableSchema -SqlInstance 'SQL01' -Database 'Sales' -Table 'Orders' -FilePath 'C:\Temp\Orders.sql'
+
+.EXAMPLE
+    Export-sqmTableSchema -SqlInstance 'SQL01' -Database 'Sales' -Table 'Orders' `
+        -TargetServerVersion ([Microsoft.SqlServer.Management.Smo.SqlServerVersion]::Version150)
 
 .NOTES
     Prerequisites: dbatools (Connect-DbaInstance), SMO (loaded transitively via dbatools).
@@ -62,6 +92,8 @@ function Export-sqmTableSchema
 		[bool]$IncludeForeignKeys = $true,
 		[Parameter(Mandatory = $false)]
 		[bool]$IncludeIndexes = $true,
+		[Parameter(Mandatory = $false)]
+		[Microsoft.SqlServer.Management.Smo.SqlServerVersion]$TargetServerVersion,
 		[Parameter(Mandatory = $false)]
 		[string]$FilePath
 	)
@@ -94,6 +126,8 @@ function Export-sqmTableSchema
 
 	$smoTables = [System.Collections.Generic.List[object]]::new()
 	$notFound = [System.Collections.Generic.List[string]]::new()
+	$blocked = [System.Collections.Generic.List[string]]::new()
+	$warnings = [System.Collections.Generic.List[string]]::new()
 
 	foreach ($t in $Table)
 	{
@@ -106,14 +140,33 @@ function Export-sqmTableSchema
 		}
 
 		$smoTable = $db.Tables[$tableName, $schemaName]
-		if ($smoTable)
-		{
-			$smoTables.Add($smoTable)
-		}
-		else
+		if (-not $smoTable)
 		{
 			$notFound.Add("$schemaName.$tableName")
+			continue
 		}
+
+		# Partitionierte Tabellen: das physische Layout (Partitionsschema/-funktion, Filegroups)
+		# kann nicht sicher automatisch auf das Ziel uebertragen werden, da dessen Storage-Layout
+		# hier nicht bekannt ist. Lieber klar blockieren als ein CREATE TABLE erzeugen, das am
+		# Ziel mit "Partitionsschema nicht gefunden" fehlschlaegt.
+		if ($smoTable.IsPartitioned)
+		{
+			$blocked.Add("$schemaName.${tableName}: Tabelle ist partitioniert (Partitionsschema '$($smoTable.PartitionScheme)') - automatisches Scripten des physischen Layouts wird nicht unterstuetzt.")
+			continue
+		}
+
+		# CLR-basierte benutzerdefinierte Typen: Scripting der Tabelle funktioniert, aber die
+		# Assembly muss manuell auf dem Ziel bereitgestellt werden - kein Blocker, nur ein Hinweis.
+		foreach ($col in $smoTable.Columns)
+		{
+			if ($col.DataType.SqlDataType.ToString() -eq 'UserDefinedType')
+			{
+				$warnings.Add("$schemaName.${tableName}: Spalte '$($col.Name)' nutzt den CLR-Typ '$($col.DataType.Schema).$($col.DataType.Name)' - die zugehoerige Assembly muss manuell auf dem Ziel bereitgestellt werden.")
+			}
+		}
+
+		$smoTables.Add($smoTable)
 	}
 
 	if ($notFound.Count -gt 0)
@@ -122,42 +175,65 @@ function Export-sqmTableSchema
 		Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
 		Write-Warning $msg
 	}
-
-	if ($smoTables.Count -eq 0)
+	if ($blocked.Count -gt 0)
 	{
-		$msg = "Keine der angegebenen Tabellen wurde gefunden. Vorgang abgebrochen."
-		Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
-		throw $msg
+		foreach ($b in $blocked) { Write-Warning $b }
+		Write-sqmTransferLog -Message "Blockierte Tabelle(n): $($blocked -join ' | ')" -FunctionName $functionName -Level 'WARNING'
+	}
+	foreach ($w in $warnings)
+	{
+		Write-Warning $w
+		Write-sqmTransferLog -Message $w -FunctionName $functionName -Level 'WARNING'
 	}
 
-	$scripter = New-Object Microsoft.SqlServer.Management.Smo.Scripter($server)
-	$opts = New-Object Microsoft.SqlServer.Management.Smo.ScriptingOptions
-	$opts.ScriptSchema = $true
-	$opts.ScriptData = $false
-	$opts.Indexes = $IncludeIndexes
-	$opts.DriPrimaryKey = $true
-	$opts.DriForeignKeys = $IncludeForeignKeys
-	$opts.DriUniqueKeys = $true
-	$opts.DriChecks = $true
-	$opts.DriDefaults = $true
-	$opts.Triggers = $false
-	$opts.IncludeIfNotExists = $true
-	$opts.AnsiPadding = $true
-	$opts.ExtendedProperties = $false
-	$scripter.Options = $opts
+	$batches = @()
+	$schemasGuarded = @()
 
-	$urns = New-Object Microsoft.SqlServer.Management.Smo.UrnCollection
-	foreach ($smoTable in $smoTables) { $urns.Add($smoTable.Urn) }
+	if ($smoTables.Count -gt 0)
+	{
+		$scripter = New-Object Microsoft.SqlServer.Management.Smo.Scripter($server)
+		$opts = New-Object Microsoft.SqlServer.Management.Smo.ScriptingOptions
+		$opts.ScriptSchema = $true
+		$opts.ScriptData = $false
+		$opts.Indexes = $IncludeIndexes
+		$opts.DriPrimaryKey = $true
+		$opts.DriForeignKeys = $IncludeForeignKeys
+		$opts.DriUniqueKeys = $true
+		$opts.DriChecks = $true
+		$opts.DriDefaults = $true
+		$opts.Triggers = $false
+		$opts.IncludeIfNotExists = $true
+		$opts.AnsiPadding = $true
+		$opts.ExtendedProperties = $false
+		# Walkt die echte Abhaengigkeitskette (sys.sql_expression_dependencies): benutzerdefinierte
+		# Typen, Sequenzen und per FK referenzierte Tabellen werden automatisch mitgescriptet, in
+		# der richtigen Erstellungsreihenfolge - verhindert Fehlschlaege durch fehlende Abhaengigkeiten.
+		$opts.WithDependencies = $true
+		if ($TargetServerVersion) { $opts.TargetServerVersion = $TargetServerVersion }
+		$scripter.Options = $opts
 
-	try
-	{
-		$batches = @($scripter.Script($urns))
-	}
-	catch
-	{
-		$msg = "Scripting fehlgeschlagen: $($_.Exception.Message)"
-		Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
-		throw
+		$urns = New-Object Microsoft.SqlServer.Management.Smo.UrnCollection
+		foreach ($smoTable in $smoTables) { $urns.Add($smoTable.Urn) }
+
+		try
+		{
+			$batches = @($scripter.Script($urns))
+		}
+		catch
+		{
+			$msg = "Scripting fehlgeschlagen: $($_.Exception.Message)"
+			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
+			throw
+		}
+
+		# Ziel-Schema(s) absichern: ein fehlendes Schema wuerde CREATE TABLE sonst zum Scheitern
+		# bringen, obwohl die Tabelle selbst korrekt gescriptet wurde.
+		$schemasGuarded = @($smoTables | Select-Object -ExpandProperty Schema -Unique | Where-Object { $_ -ne 'dbo' })
+		$schemaBatches = @(foreach ($schemaName in $schemasGuarded)
+			{
+				"IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = N'$($schemaName -replace "'", "''")')`r`nEXEC('CREATE SCHEMA [$schemaName]')"
+			})
+		$batches = @($schemaBatches) + @($batches)
 	}
 
 	$combinedScript = ($batches -join "`r`nGO`r`n")
@@ -177,7 +253,7 @@ function Export-sqmTableSchema
 		}
 	}
 
-	Write-sqmTransferLog -Message "$($smoTables.Count) Tabelle(n) erfolgreich gescriptet ($($batches.Count) Batch(es))." `
+	Write-sqmTransferLog -Message "$($smoTables.Count) Tabelle(n) erfolgreich gescriptet ($($batches.Count) Batch(es), $($schemasGuarded.Count) Schema(s) abgesichert)." `
 						  -FunctionName $functionName -Level 'INFO'
 
 	[PSCustomObject]@{
@@ -185,6 +261,9 @@ function Export-sqmTableSchema
 		Database      = $Database
 		Tables        = @($smoTables | ForEach-Object { "$($_.Schema).$($_.Name)" })
 		NotFound      = @($notFound)
+		Blocked       = @($blocked)
+		Warnings      = @($warnings)
+		SchemasGuarded = @($schemasGuarded)
 		ScriptBatches = $batches
 		Script        = $combinedScript
 		FilePath      = $FilePath
