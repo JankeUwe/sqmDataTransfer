@@ -31,16 +31,22 @@ function Show-sqmTableTransferGui
 	Add-Type -AssemblyName System.Drawing
 
 	# --- Visual Studio "Dark" colour palette (consistent with Show-sqmToolGui) ------
-	$cWindow = [System.Drawing.Color]::FromArgb(30, 30, 30)
-	$cPanel  = [System.Drawing.Color]::FromArgb(45, 45, 48)
-	$cText   = [System.Drawing.Color]::FromArgb(220, 220, 220)
-	$cDim    = [System.Drawing.Color]::FromArgb(153, 153, 153)
-	$cBtn    = [System.Drawing.Color]::FromArgb(62, 62, 66)
-	$cAccent = [System.Drawing.Color]::FromArgb(0, 122, 204)
-	$cBorder = [System.Drawing.Color]::FromArgb(63, 63, 70)
-	$cOk     = [System.Drawing.Color]::FromArgb(78, 201, 176)
-	$cWarn   = [System.Drawing.Color]::FromArgb(220, 180, 60)
-	$cErr    = [System.Drawing.Color]::FromArgb(224, 108, 117)
+	# Script-scoped (wie Show-sqmToolGui's $script:searchIndex): Klick-Handler, die tief in
+	# New-InstancePanel (einer verschachtelten Funktion) definiert sind, feuern erst NACHDEM
+	# New-InstancePanel bereits zurueckgekehrt ist. Ein einfacher Scriptblock ohne
+	# GetNewClosure() findet dann Variablen aus einer bereits beendeten Elternfunktion nicht
+	# mehr (wird $null); $script:-Variablen bleiben dagegen fuer die gesamte Laufzeit des
+	# Aufrufs erreichbar - unabhaengig davon, welche Funktion sie deklariert hat.
+	$script:cWindow = [System.Drawing.Color]::FromArgb(30, 30, 30)
+	$script:cPanel  = [System.Drawing.Color]::FromArgb(45, 45, 48)
+	$script:cText   = [System.Drawing.Color]::FromArgb(220, 220, 220)
+	$script:cDim    = [System.Drawing.Color]::FromArgb(153, 153, 153)
+	$script:cBtn    = [System.Drawing.Color]::FromArgb(62, 62, 66)
+	$script:cAccent = [System.Drawing.Color]::FromArgb(0, 122, 204)
+	$script:cBorder = [System.Drawing.Color]::FromArgb(63, 63, 70)
+	$script:cOk     = [System.Drawing.Color]::FromArgb(78, 201, 176)
+	$script:cWarn   = [System.Drawing.Color]::FromArgb(220, 180, 60)
+	$script:cErr    = [System.Drawing.Color]::FromArgb(224, 108, 117)
 
 	function Style-Button($b)
 	{
@@ -79,7 +85,9 @@ function Show-sqmTableTransferGui
 	}
 
 	# --- Main form ---------------------------------------------------------------
-	$form = New-Object System.Windows.Forms.Form
+	# Script-scoped: referenced from inside New-InstancePanel's click handler (see palette note above).
+	$script:form = New-Object System.Windows.Forms.Form
+	$form = $script:form
 	$form.Text = 'sqmDataTransfer'
 	$form.Size = New-Object System.Drawing.Size(980, 900)
 	$form.StartPosition = 'CenterScreen'
@@ -169,6 +177,12 @@ function Show-sqmTableTransferGui
 		$txtPass.UseSystemPasswordChar = $true
 		$txtPass.Enabled = $false
 
+		# GetNewClosure() ist hier noetig: New-InstancePanel ist bereits zurueckgekehrt, wenn der
+		# Klick spaeter feuert, und ohne GetNewClosure() findet ein Scriptblock dann seine EIGENEN
+		# lokalen Variablen (hier $txtUser/$txtPass/$chkSqlAuth) nicht mehr (werden $null/leer) -
+		# verifiziert per Repro. Variablen aus der Elternfunktion (Paletten-Farben, $form) sind
+		# dagegen bewusst $script:-scoped (siehe oben) und bleiben so unabhaengig von
+		# GetNewClosure() ueber die gesamte Laufzeit erreichbar.
 		$chkSqlAuth.Add_CheckedChanged({
 				$txtUser.Enabled = $chkSqlAuth.Checked
 				$txtPass.Enabled = $chkSqlAuth.Checked
