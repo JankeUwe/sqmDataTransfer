@@ -31,22 +31,24 @@ function Show-sqmTableTransferGui
 	Add-Type -AssemblyName System.Drawing
 
 	# --- Visual Studio "Dark" colour palette (consistent with Show-sqmToolGui) ------
-	# Script-scoped (wie Show-sqmToolGui's $script:searchIndex): Klick-Handler, die tief in
-	# New-InstancePanel (einer verschachtelten Funktion) definiert sind, feuern erst NACHDEM
-	# New-InstancePanel bereits zurueckgekehrt ist. Ein einfacher Scriptblock ohne
-	# GetNewClosure() findet dann Variablen aus einer bereits beendeten Elternfunktion nicht
-	# mehr (wird $null); $script:-Variablen bleiben dagegen fuer die gesamte Laufzeit des
-	# Aufrufs erreichbar - unabhaengig davon, welche Funktion sie deklariert hat.
-	$script:cWindow = [System.Drawing.Color]::FromArgb(30, 30, 30)
-	$script:cPanel  = [System.Drawing.Color]::FromArgb(45, 45, 48)
-	$script:cText   = [System.Drawing.Color]::FromArgb(220, 220, 220)
-	$script:cDim    = [System.Drawing.Color]::FromArgb(153, 153, 153)
-	$script:cBtn    = [System.Drawing.Color]::FromArgb(62, 62, 66)
-	$script:cAccent = [System.Drawing.Color]::FromArgb(0, 122, 204)
-	$script:cBorder = [System.Drawing.Color]::FromArgb(63, 63, 70)
-	$script:cOk     = [System.Drawing.Color]::FromArgb(78, 201, 176)
-	$script:cWarn   = [System.Drawing.Color]::FromArgb(220, 180, 60)
-	$script:cErr    = [System.Drawing.Color]::FromArgb(224, 108, 117)
+	$cWindow = [System.Drawing.Color]::FromArgb(30, 30, 30)
+	$cPanel  = [System.Drawing.Color]::FromArgb(45, 45, 48)
+	$cText   = [System.Drawing.Color]::FromArgb(220, 220, 220)
+	$cDim    = [System.Drawing.Color]::FromArgb(153, 153, 153)
+	$cBtn    = [System.Drawing.Color]::FromArgb(62, 62, 66)
+	$cAccent = [System.Drawing.Color]::FromArgb(0, 122, 204)
+	$cBorder = [System.Drawing.Color]::FromArgb(63, 63, 70)
+	$cOk     = [System.Drawing.Color]::FromArgb(78, 201, 176)
+	$cWarn   = [System.Drawing.Color]::FromArgb(220, 180, 60)
+	$cErr    = [System.Drawing.Color]::FromArgb(224, 108, 117)
+
+	# Bruecke fuer New-InstancePanel's Klick-Handler (siehe dort): $script: bindet sich in
+	# einem per Modul (Get-ChildItem | ForEach-Object { . $_.FullName }) geladenen Skript NICHT
+	# zuverlaessig an den echten Modul-Scope - verifiziert per Repro (funktioniert isoliert,
+	# schlaegt aber exakt mit diesem Lademechanismus fehl). $Global: ist das einzige Scope, das
+	# in beiden Faellen zuverlaessig funktioniert; ein einzelnes, klar benanntes Kontextobjekt
+	# haelt den globalen Namensraum sauber. Wird am Ende der Funktion wieder entfernt.
+	$Global:__sqmDataTransferGuiCtx = [PSCustomObject]@{ cDim = $cDim; cOk = $cOk; cErr = $cErr; Form = $null }
 
 	function Style-Button($b)
 	{
@@ -85,9 +87,8 @@ function Show-sqmTableTransferGui
 	}
 
 	# --- Main form ---------------------------------------------------------------
-	# Script-scoped: referenced from inside New-InstancePanel's click handler (see palette note above).
-	$script:form = New-Object System.Windows.Forms.Form
-	$form = $script:form
+	$form = New-Object System.Windows.Forms.Form
+	$Global:__sqmDataTransferGuiCtx.Form = $form
 	$form.Text = 'sqmDataTransfer'
 	$form.Size = New-Object System.Drawing.Size(980, 900)
 	$form.StartPosition = 'CenterScreen'
@@ -180,9 +181,9 @@ function Show-sqmTableTransferGui
 		# GetNewClosure() ist hier noetig: New-InstancePanel ist bereits zurueckgekehrt, wenn der
 		# Klick spaeter feuert, und ohne GetNewClosure() findet ein Scriptblock dann seine EIGENEN
 		# lokalen Variablen (hier $txtUser/$txtPass/$chkSqlAuth) nicht mehr (werden $null/leer) -
-		# verifiziert per Repro. Variablen aus der Elternfunktion (Paletten-Farben, $form) sind
-		# dagegen bewusst $script:-scoped (siehe oben) und bleiben so unabhaengig von
-		# GetNewClosure() ueber die gesamte Laufzeit erreichbar.
+		# verifiziert per Repro. Variablen aus der Elternfunktion (Paletten-Farben, $form) muessen
+		# dagegen ueber $Global:__sqmDataTransferGuiCtx laufen (siehe btnConnect unten) - $script:
+		# bindet sich in einem per Modul geladenen Skript NICHT an den echten Modul-Scope.
 		$chkSqlAuth.Add_CheckedChanged({
 				$txtUser.Enabled = $chkSqlAuth.Checked
 				$txtPass.Enabled = $chkSqlAuth.Checked
@@ -199,9 +200,10 @@ function Show-sqmTableTransferGui
 		}
 
 		$btnConnect.Add_Click({
-				$lblConnStatus.ForeColor = $cDim
+				$ctx = $Global:__sqmDataTransferGuiCtx
+				$lblConnStatus.ForeColor = $ctx.cDim
 				$lblConnStatus.Text = 'Verbinde...'
-				$form.Refresh()
+				$ctx.Form.Refresh()
 				[System.Windows.Forms.Application]::DoEvents()
 				try
 				{
@@ -217,12 +219,12 @@ function Show-sqmTableTransferGui
 					$cmbDb.Items.Clear()
 					foreach ($n in $dbNames) { $cmbDb.Items.Add($n) | Out-Null }
 					if ($currentText) { $cmbDb.Text = $currentText }
-					$lblConnStatus.ForeColor = $cOk
+					$lblConnStatus.ForeColor = $ctx.cOk
 					$lblConnStatus.Text = "verbunden ($($dbNames.Count) DBs, $($srv.VersionString))"
 				}
 				catch
 				{
-					$lblConnStatus.ForeColor = $cErr
+					$lblConnStatus.ForeColor = $ctx.cErr
 					$lblConnStatus.Text = "Fehler: $($_.Exception.Message)"
 				}
 			}.GetNewClosure())
@@ -664,5 +666,13 @@ function Show-sqmTableTransferGui
 			$form.TopMost = $false
 		})
 
-	[void]$form.ShowDialog()
+	try
+	{
+		[void]$form.ShowDialog()
+	}
+	finally
+	{
+		# Aufraeumen: keine Reste im globalen Namensraum nach Schliessen der GUI hinterlassen.
+		Remove-Variable -Name __sqmDataTransferGuiCtx -Scope Global -ErrorAction SilentlyContinue
+	}
 }
