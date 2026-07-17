@@ -1,0 +1,70 @@
+# sqmDataTransfer
+
+PowerShell module (built on [dbatools](https://dbatools.io)) that transfers table data between
+SQL Server instances, with optional metadata scripting, safe foreign-key/index handling around
+the transfer, row-count reconciliation and full logging.
+
+## What it does
+
+For a chosen set of tables, `Invoke-sqmTableTransfer` runs:
+
+1. **Script metadata** (optional, `-ScriptMetadata`): scripts the table DDL (columns, PK,
+   indexes, foreign keys, defaults, checks) from the source and creates it on the target if it
+   doesn't already exist there. Existing target tables are never dropped/recreated.
+2. **Disable** foreign keys and non-clustered indexes on the target table.
+3. **Copy data** from source to target (`Copy-DbaDbTableData` under the hood).
+4. **Compare row counts** between source and target.
+5. **Re-enable** foreign keys and indexes on the target - guaranteed via a `finally` block, even
+   if an earlier step fails.
+
+Every step is logged to `%LogPath%\sqmDataTransfer_yyyyMMdd_<FunctionName>.log` and returned as a
+structured result object (`Table`, `Step`, `Status`, `Message`, `Timestamp`).
+
+Pass `-HtmlReportPath <path>` to get a self-contained HTML report at the end of the run: every
+processed table plus any that are missing/failed, and a source-vs-destination row-count
+comparison (tables that couldn't be compared, e.g. because the copy itself failed, are shown as
+"nicht verglichen" rather than being silently omitted).
+
+## Functions
+
+| Function | Purpose |
+|---|---|
+| `Invoke-sqmTableTransfer` | Main entry point - orchestrates the full sequence above. |
+| `Export-sqmTableSchema` | Scripts table DDL from a source instance (SMO Scripter). |
+| `New-sqmTableFromScript` | Executes scripted DDL batches against a target instance. |
+| `Copy-sqmTableSchema` | Convenience wrapper: export + create in one call. |
+| `Disable-sqmTableConstraints` | Disables FKs / non-clustered indexes on a table. |
+| `Enable-sqmTableConstraints` | Re-enables (rebuilds) previously disabled FKs / indexes. |
+| `Copy-sqmTableData` | Bulk-copies table data (wraps `Copy-DbaDbTableData`). |
+| `Compare-sqmTableRowCount` | Compares row counts source vs. target. |
+| `Export-sqmTransferReport` | Builds the HTML summary/row-count report. |
+| `Show-sqmTableTransferGui` | WinForms GUI for the whole workflow. |
+| `Get-sqmTransferConfig` / `Set-sqmTransferConfig` | Module configuration (log path, batch size, etc.). |
+
+## Quick start
+
+```powershell
+Import-Module .\sqmDataTransfer.psd1
+
+Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales `
+    -Destination SQL02 -DestinationDatabase Sales `
+    -Table 'dbo.Orders', 'dbo.Customers' `
+    -ScriptMetadata -Truncate -Confirm:$false
+```
+
+Or via GUI:
+
+```powershell
+Show-sqmTableTransferGui
+```
+
+## Notes
+
+- Clustered indexes are never disabled (doing so blocks table access entirely) - only
+  non-clustered indexes are disabled/rebuilt.
+- Foreign keys are disabled/enabled individually by name, leaving CHECK/DEFAULT constraints
+  untouched.
+- `Enable-sqmTableConstraints` re-detects currently disabled objects on the table - no state
+  needs to be passed in from a prior `Disable-sqmTableConstraints` call.
+- Configuration is persisted separately from `sqmSQLTool` (`%APPDATA%\SQLDataTransfer\config.json`)
+  so both modules can be imported side by side without interfering.
