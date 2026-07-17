@@ -44,11 +44,26 @@ written to `-OutputPath` (defaults to `Get-sqmTransferConfig -Key 'OutputPath'`,
 | `Show-sqmTableTransferGui` | WinForms GUI for the whole workflow. |
 | `Get-sqmTransferConfig` / `Set-sqmTransferConfig` | Module configuration (log path, batch size, etc.). |
 
-## Quick start
+## Installation
+
+```
+Install.cmd                  -> auto-detect: AllUsers if Admin, CurrentUser otherwise
+Install.cmd AllUsers         -> installs system-wide (auto-elevates via UAC if needed)
+Install.cmd CurrentUser      -> installs for current user only (no elevation needed)
+```
+
+Copies the module into the PowerShell module path (robocopy + Unblock-File), ensures the
+`dbatools` dependency in the same scope, and runs an import test. Same convention as
+`sqmSQLTool`/`sqmPartitionTool`'s installers. Without installing, the module can also be imported
+directly from this folder for development:
 
 ```powershell
 Import-Module .\sqmDataTransfer.psd1
+```
 
+## Quick start
+
+```powershell
 Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales `
     -Destination SQL02 -DestinationDatabase Sales `
     -Table 'dbo.Orders', 'dbo.Customers' `
