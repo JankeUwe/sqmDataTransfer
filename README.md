@@ -15,9 +15,12 @@ For a chosen set of tables, `Invoke-sqmTableTransfer` runs:
      - The destination **schema** is created automatically if missing.
      - **User-defined types, sequences and FK-referenced tables** the table depends on are scripted
        automatically too (SMO `WithDependencies`, walks the real dependency graph).
-     - **Partitioned tables** (a non-empty partition scheme) are never auto-scripted - physical
-       storage layout can't be safely inferred for the target - and are reported with a clear
-       `Blocked` status instead of failing with a confusing missing-partition-scheme error.
+     - **Partitioned tables** are still fully scripted and transferred - but the physical
+       partitioning itself (partition function/scheme, per-partition filegroups) is stripped from
+       the script (SMO `NoTablePartitioningSchemes`/`NoIndexPartitioningSchemes`), since this
+       function has no way to know whether an equivalent scheme exists on the target. The table
+       and its indexes land as normal, non-partitioned objects on the default filegroup (PRIMARY)
+       instead of failing with a missing-partition-scheme error. Reported as a warning.
      - **CLR user-defined types** are scripted but flagged as a warning: the assembly itself has to
        be deployed on the target manually.
      - The destination's **actual SQL Server version** is auto-detected and passed to SMO as

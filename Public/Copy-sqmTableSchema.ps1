@@ -111,15 +111,8 @@ function Copy-sqmTableSchema
 	if (-not $schema.ScriptBatches -or $schema.ScriptBatches.Count -eq 0)
 	{
 		# WICHTIG: nicht einfach 'return' (=$null) - der Aufrufer (Invoke-sqmTableTransfer) muss
-		# dies als fehlgeschlagene/blockierte/nicht gefundene Tabelle erkennen koennen, statt es
-		# mangels jeglicher Failed-Ergebniszeile stillschweigend als Erfolg zu werten.
-		if ($schema.Blocked -and $schema.Blocked.Count -gt 0)
-		{
-			$msg = "Tabelle(n) blockiert fuer $($Table -join ', ') von '$Source'.'$SourceDatabase': $($schema.Blocked -join ' | ')"
-			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
-			Write-Warning $msg
-			return [PSCustomObject]@{ BatchNumber = 0; Status = 'Blocked'; Message = $msg }
-		}
+		# dies als fehlgeschlagene/nicht gefundene Tabelle erkennen koennen, statt es mangels
+		# jeglicher Failed-Ergebniszeile stillschweigend als Erfolg zu werten.
 		$msg = "Kein Script erzeugt fuer $($Table -join ', ') von '$Source'.'$SourceDatabase' - Tabelle(n) nicht gefunden: $($schema.NotFound -join ', ')."
 		Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
 		Write-Warning $msg

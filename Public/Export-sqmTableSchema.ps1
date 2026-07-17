@@ -19,11 +19,14 @@
         - User-defined types, sequences, and FK-referenced tables: SMO's WithDependencies option
           walks the real dependency graph (sys.sql_expression_dependencies) and prepends whatever
           the table's columns/constraints actually reference, in the correct creation order.
-        - Partitioned tables (a non-empty PartitionSchemeName): physical partition layout is NOT
-          auto-replicated - replicating filegroups/partition functions/schemes safely would require
-          knowing the target's storage layout, which this function has no way to infer. Such tables
-          are reported via -Blocked- instead of producing a script that would fail with a missing
-          partition scheme.
+        - Partitioned tables: physical partition layout (partition function/scheme, per-partition
+          filegroups) is NOT replicated - this function has no way to know whether an equivalent
+          scheme exists on the target, or what filegroups it has. Instead, partitioning is
+          stripped from the script entirely (SMO NoFileGroup / NoTablePartitioningSchemes /
+          NoIndexPartitioningSchemes) so the table and its indexes are created as normal,
+          non-partitioned objects on the default filegroup (PRIMARY). The table is still fully
+          scripted and transferred - only the physical partitioning itself is not recreated.
+          Reported via -Warnings-.
         - CLR user-defined types: reported as a warning (assembly deployment is out of scope), the
           table is still scripted but that column's type will not resolve on the target unless the
           assembly is deployed manually first.
@@ -126,8 +129,8 @@ function Export-sqmTableSchema
 
 	$smoTables = [System.Collections.Generic.List[object]]::new()
 	$notFound = [System.Collections.Generic.List[string]]::new()
-	$blocked = [System.Collections.Generic.List[string]]::new()
 	$warnings = [System.Collections.Generic.List[string]]::new()
+	$anyPartitioned = $false
 
 	foreach ($t in $Table)
 	{
@@ -146,14 +149,10 @@ function Export-sqmTableSchema
 			continue
 		}
 
-		# Partitionierte Tabellen: das physische Layout (Partitionsschema/-funktion, Filegroups)
-		# kann nicht sicher automatisch auf das Ziel uebertragen werden, da dessen Storage-Layout
-		# hier nicht bekannt ist. Lieber klar blockieren als ein CREATE TABLE erzeugen, das am
-		# Ziel mit "Partitionsschema nicht gefunden" fehlschlaegt.
 		if ($smoTable.IsPartitioned)
 		{
-			$blocked.Add("$schemaName.${tableName}: Tabelle ist partitioniert (Partitionsschema '$($smoTable.PartitionScheme)') - automatisches Scripten des physischen Layouts wird nicht unterstuetzt.")
-			continue
+			$anyPartitioned = $true
+			$warnings.Add("$schemaName.${tableName}: Tabelle war partitioniert (Partitionsschema '$($smoTable.PartitionScheme)') - wird ohne Partitionierung auf dem Standard-Filegroup (PRIMARY) angelegt.")
 		}
 
 		# CLR-basierte benutzerdefinierte Typen: Scripting der Tabelle funktioniert, aber die
@@ -174,11 +173,6 @@ function Export-sqmTableSchema
 		$msg = "Tabelle(n) nicht gefunden auf '$SqlInstance'.'$Database': $($notFound -join ', ')"
 		Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
 		Write-Warning $msg
-	}
-	if ($blocked.Count -gt 0)
-	{
-		foreach ($b in $blocked) { Write-Warning $b }
-		Write-sqmTransferLog -Message "Blockierte Tabelle(n): $($blocked -join ' | ')" -FunctionName $functionName -Level 'WARNING'
 	}
 	foreach ($w in $warnings)
 	{
@@ -209,6 +203,13 @@ function Export-sqmTableSchema
 		# Typen, Sequenzen und per FK referenzierte Tabellen werden automatisch mitgescriptet, in
 		# der richtigen Erstellungsreihenfolge - verhindert Fehlschlaege durch fehlende Abhaengigkeiten.
 		$opts.WithDependencies = $true
+		# Partitionierung entfernen: NoFileGroup allein reicht nicht (die ON [scheme]([col])-Klausel
+		# bleibt sonst erhalten) - erst mit den beiden Partitioning-Optionen zusammen landen Tabelle
+		# und Indizes ohne jeden Partitionsbezug auf dem Standard-Filegroup (PRIMARY). Verifiziert:
+		# ohne diese beiden schlaegt CREATE TABLE am Ziel fehl, wenn das Partitionsschema dort fehlt.
+		$opts.NoFileGroup = $true
+		$opts.NoTablePartitioningSchemes = $true
+		$opts.NoIndexPartitioningSchemes = $true
 		if ($TargetServerVersion) { $opts.TargetServerVersion = $TargetServerVersion }
 		$scripter.Options = $opts
 
@@ -253,7 +254,7 @@ function Export-sqmTableSchema
 		}
 	}
 
-	Write-sqmTransferLog -Message "$($smoTables.Count) Tabelle(n) erfolgreich gescriptet ($($batches.Count) Batch(es), $($schemasGuarded.Count) Schema(s) abgesichert)." `
+	Write-sqmTransferLog -Message "$($smoTables.Count) Tabelle(n) erfolgreich gescriptet ($($batches.Count) Batch(es), $($schemasGuarded.Count) Schema(s) abgesichert$(if ($anyPartitioned) { ', Partitionierung entfernt' }))." `
 						  -FunctionName $functionName -Level 'INFO'
 
 	[PSCustomObject]@{
@@ -261,7 +262,6 @@ function Export-sqmTableSchema
 		Database      = $Database
 		Tables        = @($smoTables | ForEach-Object { "$($_.Schema).$($_.Name)" })
 		NotFound      = @($notFound)
-		Blocked       = @($blocked)
 		Warnings      = @($warnings)
 		SchemasGuarded = @($schemasGuarded)
 		ScriptBatches = $batches

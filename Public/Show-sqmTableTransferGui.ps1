@@ -627,9 +627,9 @@ function Show-sqmTableTransferGui
 
 				$dgv.DataSource = ($results | ConvertTo-DataTable)
 
-				$failCount = @($results | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound', 'Blocked')).Count
+				$failCount = @($results | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound')).Count
 				$lblStatus.ForeColor = if ($failCount -gt 0) { $cErr } else { $cOk }
-				$lblStatus.Text = "Fertig - $($results.Count) Schritt(e), $failCount mit Fehler/Mismatch/NotFound/Blocked."
+				$lblStatus.Text = "Fertig - $($results.Count) Schritt(e), $failCount mit Fehler/Mismatch/NotFound."
 
 				# Tagesaktuelle Logdatei fuer diese Funktion anzeigen
 				try

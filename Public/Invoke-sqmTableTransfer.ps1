@@ -243,15 +243,6 @@ function Invoke-sqmTableTransfer
 								continue
 							}
 
-							$blockedResult = $schemaResults | Where-Object Status -eq 'Blocked' | Select-Object -First 1
-							if ($blockedResult)
-							{
-								_AddResult $t 'ScriptMetadata' 'Blocked' $blockedResult.Message
-								if (-not $ContinueOnError -and $EnableException) { throw "Tabelle '$t' kann nicht automatisch angelegt werden: $($blockedResult.Message)" }
-								# Physisches Layout (z.B. Partitionierung) kann nicht sicher angelegt werden - naechste Tabelle.
-								continue
-							}
-
 							$schemaFailCount = @($schemaResults | Where-Object Status -eq 'Failed').Count
 							if ($schemaFailCount -gt 0)
 							{
@@ -380,10 +371,10 @@ function Invoke-sqmTableTransfer
 	end
 	{
 		$successCount = @($results | Where-Object Status -eq 'Success').Count
-		$failCount = @($results | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound', 'Blocked')).Count
+		$failCount = @($results | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound')).Count
 		$warnCount = @($results | Where-Object Status -in @('Warning', 'Skipped', 'WhatIf')).Count
 
-		$summaryMsg = "Invoke-sqmTableTransfer abgeschlossen - Erfolg: $successCount | Fehler/Mismatch/NotFound/Blocked: $failCount | Warnungen/Uebersprungen: $warnCount"
+		$summaryMsg = "Invoke-sqmTableTransfer abgeschlossen - Erfolg: $successCount | Fehler/Mismatch/NotFound: $failCount | Warnungen/Uebersprungen: $warnCount"
 		Write-sqmTransferLog -Message $summaryMsg -FunctionName $functionName -Level 'INFO'
 		Write-Host $summaryMsg -ForegroundColor $(if ($failCount -gt 0) { 'Yellow' } else { 'Green' })
 
