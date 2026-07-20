@@ -622,6 +622,10 @@ function Show-sqmTableTransferGui
 				}
 				if ($txtReportPath.Text) { $params['OutputPath'] = $txtReportPath.Text }
 				$params['NoOpen'] = $chkNoOpen.Checked
+				$srcCred = Get-CredentialFromPanel $srcPanel
+				$dstCred = Get-CredentialFromPanel $dstPanel
+				if ($srcCred) { $params['SourceCredential'] = $srcCred }
+				if ($dstCred) { $params['DestinationCredential'] = $dstCred }
 
 				$results = Invoke-sqmTableTransfer @params
 
