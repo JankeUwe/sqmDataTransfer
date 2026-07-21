@@ -1,5 +1,7 @@
 # sqmDataTransfer
 
+Part of the [powershelldba.de](https://www.powershelldba.de) SQL Server toolset by [Uwe Janke](https://www.powershelldba.de) — project page: [powershelldba.de/sqmtransfer](https://www.powershelldba.de/sqmtransfer/)
+
 PowerShell module (built on [dbatools](https://dbatools.io)) that transfers table data between
 SQL Server instances, with optional metadata scripting, safe foreign-key/index handling around
 the transfer, row-count reconciliation and full logging.
