@@ -75,6 +75,7 @@
 		'Enable-sqmTableConstraints',
 		'Copy-sqmTableData',
 		'Compare-sqmTableRowCount',
+		'Sync-sqmTableData',
 		'Invoke-sqmTableTransfer',
 		'Show-sqmTableTransferGui'
 	)

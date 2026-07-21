@@ -62,6 +62,32 @@ Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales `
     -ScriptMetadata -SkipCompleted -Confirm:$false
 ```
 
+### Syncing a live table (source keeps changing after the transfer)
+
+`Invoke-sqmTableTransfer`/`-SkipCompleted` answer "which tables are fully done" - they don't help
+once a table itself keeps changing after its initial transfer (e.g. a customer testing against the
+target while the source is still being used). Re-truncating and re-copying the whole table on every
+re-run doesn't scale once it's large. `Sync-sqmTableData` instead transfers only the actual
+difference:
+
+1. Computes a SHA2-256 hash per row (over all non-PK, non-computed, non-rowversion columns) on
+   both sides and compares them by primary key - the one full-table scan that can't be avoided
+   without a trustworthy modified-date column.
+2. Applies only what's different: new/changed rows are upserted via a staging table + `MERGE`,
+   rows removed from the source are deleted from the target too (`-IncludeDelete`, default `$true`).
+3. If nothing differs, the table is skipped entirely - no writes at all.
+
+```powershell
+# Only re-sync the handful of tables the customer's test actually touches - not the whole 220
+Sync-sqmTableData -Source SQL01 -SourceDatabase Sales `
+    -Destination SQL02 -DestinationDatabase Sales `
+    -Table 'dbo.Orders', 'dbo.OrderDetails' -Confirm:$false
+```
+
+Requires a primary key on the table (composite PKs are supported) and identical structure on both
+sides - it doesn't create or alter tables. Because step 1 is a full scan on both sides, only point
+it at the tables that are actually expected to have changed, not an entire large table set.
+
 ## Functions
 
 | Function | Purpose |
@@ -74,6 +100,7 @@ Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales `
 | `Enable-sqmTableConstraints` | Re-enables (rebuilds) previously disabled FKs / indexes. |
 | `Copy-sqmTableData` | Bulk-copies table data (wraps `Copy-DbaDbTableData`). |
 | `Compare-sqmTableRowCount` | Compares row counts source vs. target. |
+| `Sync-sqmTableData` | Hash-diffs source vs. target and applies only insert/update/delete. |
 | `Export-sqmTransferReport` | Builds the HTML summary/row-count report. |
 | `Show-sqmTableTransferGui` | WinForms GUI for the whole workflow. |
 | `Get-sqmTransferConfig` / `Set-sqmTransferConfig` | Module configuration (log path, batch size, etc.). |
