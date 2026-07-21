@@ -43,7 +43,24 @@ and a source-vs-destination row-count comparison (tables that couldn't be compar
 the copy itself failed, are shown as "nicht verglichen" rather than being silently omitted). It is
 written to `-OutputPath` (defaults to `Get-sqmTransferConfig -Key 'OutputPath'`, i.e. the same
 `C:\System\WinSrvLog\MSSQL` location sqmSQLTool uses) and opens automatically in the browser unless
-`-NoOpen` is passed.
+`-NoOpen` is passed. That report is only written once the run finishes normally, though - if a large
+run is killed mid-way (crashed session, box rebooted overnight, etc.) there is no report for it.
+
+### Resuming an interrupted run
+
+Pass `-SkipCompleted` to re-run the same (or a superset) `-Table` list after an interrupted run.
+Before touching anything, it runs `Compare-sqmTableRowCount` against every requested table; any
+table where source and target row counts already match is skipped (logged as step
+`SkipCompleted`/`Skipped` and included in the HTML report) and only the remaining tables actually
+get processed. No separate bookkeeping of "which tables finished" is needed - completeness is
+re-derived from the actual data each time:
+
+```powershell
+Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales `
+    -Destination SQL02 -DestinationDatabase Sales `
+    -Table $all220Tables `
+    -ScriptMetadata -SkipCompleted -Confirm:$false
+```
 
 ## Functions
 

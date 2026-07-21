@@ -44,6 +44,14 @@
     Script the table's metadata from the source and create it on the target if it does not
     already exist there. Existing target tables are left untouched (never dropped/recreated).
 
+.PARAMETER SkipCompleted
+    Before processing, runs Compare-sqmTableRowCount for every requested table. Any table where
+    source and target row counts already match (target table exists and both counts are equal)
+    is skipped entirely (logged with Step 'SkipCompleted') and excluded from the run. Intended to
+    resume an interrupted/aborted run without re-transferring tables that already finished. Tables
+    that don't yet exist on the target, or whose counts differ or can't be compared, are processed
+    normally.
+
 .PARAMETER IncludeForeignKeys
     Include foreign keys in metadata scripting and in the disable/enable handling. Default: $true.
 
@@ -138,6 +146,8 @@ function Invoke-sqmTableTransfer
 		[Parameter(Mandatory = $false)]
 		[switch]$ScriptMetadata,
 		[Parameter(Mandatory = $false)]
+		[switch]$SkipCompleted,
+		[Parameter(Mandatory = $false)]
 		[bool]$IncludeForeignKeys = $true,
 		[Parameter(Mandatory = $false)]
 		[bool]$IncludeIndexes = $true,
@@ -197,8 +207,56 @@ function Invoke-sqmTableTransfer
 				})
 		}
 
+		# Gleiche Normalisierung wie in Compare-sqmTableRowCount (dessen -Table-Ergebnisse immer
+		# als 'schema.name' zurueckkommen), damit der SkipCompleted-Abgleich unabhaengig davon
+		# funktioniert, ob der Aufrufer das Schema explizit angegeben hat.
+		function _NormalizeTableName
+		{
+			param ([string]$Name)
+			if ($Name -match '^(?<schema>[^.]+)\.(?<name>.+)$') { return "$($Matches['schema']).$($Matches['name'])" }
+			return "dbo.$Name"
+		}
+
 		Write-sqmTransferLog -Message "Start Invoke-sqmTableTransfer: '$Source'.'$SourceDatabase' -> '$Destination'.'$DestinationDatabase' | Tabellen: $($Table -join ', ')" `
 							  -FunctionName $functionName -Level 'INFO'
+
+		# ------------------------------------------------------------------
+		# SkipCompleted: bereits vollstaendig uebertragene Tabellen (Quelle/Ziel-Zeilenzahl
+		# identisch) aus der Liste entfernen - fuer den Wiederanlauf nach Abbruch.
+		# ------------------------------------------------------------------
+		if ($SkipCompleted)
+		{
+			$originalCount = @($Table).Count
+			Write-sqmTransferLog -Message "SkipCompleted aktiv - pruefe $originalCount Tabelle(n) auf bereits abgeschlossenen Transfer." `
+								  -FunctionName $functionName -Level 'INFO'
+			try
+			{
+				$preCompare = Compare-sqmTableRowCount -Source $Source -SourceDatabase $SourceDatabase `
+														 -Destination $Destination -DestinationDatabase $DestinationDatabase `
+														 -Table $Table -SourceCredential $srcCred -DestinationCredential $dstCred
+
+				$alreadyDone = @($preCompare | Where-Object { -not $_.Message -and $_.Match } | ForEach-Object Table)
+
+				if ($alreadyDone.Count -gt 0)
+				{
+					foreach ($doneTable in $alreadyDone)
+					{
+						$doneDetail = $preCompare | Where-Object Table -eq $doneTable | Select-Object -First 1
+						_AddResult $doneTable 'SkipCompleted' 'Skipped' "Quelle und Ziel haben bereits identische Zeilenzahl ($($doneDetail.SourceRows)) - Transfer uebersprungen."
+					}
+					$Table = @($Table | Where-Object { $alreadyDone -notcontains (_NormalizeTableName $_) })
+				}
+
+				$msg = "SkipCompleted: $($alreadyDone.Count) von $originalCount Tabelle(n) bereits vollstaendig - werden uebersprungen. Verbleibend: $(@($Table).Count)."
+				Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'INFO'
+				Write-Host $msg -ForegroundColor Cyan
+			}
+			catch
+			{
+				Write-Warning "SkipCompleted-Pruefung fehlgeschlagen, alle Tabellen werden regulaer verarbeitet: $($_.Exception.Message)"
+				Write-sqmTransferLog -Message "SkipCompleted-Pruefung fehlgeschlagen: $($_.Exception.Message)" -FunctionName $functionName -Level 'ERROR'
+			}
+		}
 	}
 
 	process

@@ -8,7 +8,8 @@
     already exists on the target - Transfer - or needs to be created - Anlegen), select tables
     (individually, or via Alle/Keine), see the source row count for any checked table, choose
     transfer options (script+create missing tables, disable/enable FKs and indexes, truncate,
-    revalidate FKs on re-enable, batch size, simulate/WhatIf) and run Invoke-sqmTableTransfer.
+    revalidate FKs on re-enable, batch size, simulate/WhatIf, skip already-complete tables to
+    resume an interrupted run) and run Invoke-sqmTableTransfer.
     The step-by-step log for the run and the structured per-table/per-step result table are shown
     after completion.
 
@@ -448,6 +449,12 @@ function Show-sqmTableTransferGui
 	$chkWhatIf.Location = New-Object System.Drawing.Point(390, 75)
 	$chkWhatIf.Size = New-Object System.Drawing.Size(230, 22)
 
+	$chkSkipCompleted = New-Object System.Windows.Forms.CheckBox
+	$chkSkipCompleted.Text = 'Bereits vollstaendige Tabellen ueberspringen (Wiederanlauf)'
+	$chkSkipCompleted.ForeColor = $cText
+	$chkSkipCompleted.Location = New-Object System.Drawing.Point(390, 100)
+	$chkSkipCompleted.Size = New-Object System.Drawing.Size(340, 22)
+
 	$lblBatch = New-Object System.Windows.Forms.Label
 	$lblBatch.Text = 'Batchgroesse:'
 	$lblBatch.Location = New-Object System.Drawing.Point(740, 27)
@@ -463,7 +470,7 @@ function Show-sqmTableTransferGui
 	$numBatch.BackColor = $cWindow
 	$numBatch.ForeColor = $cText
 
-	$grpOpt.Controls.AddRange(@($chkScriptMeta, $chkFks, $chkIdx, $chkKeepIdentity, $chkTruncate, $chkRevalidate, $chkWhatIf, $lblBatch, $numBatch))
+	$grpOpt.Controls.AddRange(@($chkScriptMeta, $chkFks, $chkIdx, $chkKeepIdentity, $chkTruncate, $chkRevalidate, $chkWhatIf, $chkSkipCompleted, $lblBatch, $numBatch))
 	$form.Controls.Add($grpOpt)
 
 	# --- HTML report options -----------------------------------------------------
@@ -609,6 +616,7 @@ function Show-sqmTableTransferGui
 					DestinationDatabase   = $dstPanel.Database.Text
 					Table				  = $selectedTables
 					ScriptMetadata	      = $chkScriptMeta.Checked
+					SkipCompleted	      = $chkSkipCompleted.Checked
 					IncludeForeignKeys    = $chkFks.Checked
 					IncludeIndexes	      = $chkIdx.Checked
 					SkipConstraintHandling = (-not $chkFks.Checked -and -not $chkIdx.Checked)
