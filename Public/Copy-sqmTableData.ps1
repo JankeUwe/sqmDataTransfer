@@ -117,11 +117,11 @@ function Copy-sqmTableData
 	foreach ($t in $Table)
 	{
 		$targetTableName = if ($DestinationTable) { $DestinationTable } else { $t }
-		$action = "Daten von '$Source'.'$SourceDatabase'.[$t] nach '$Destination'.'$DestinationDatabase'.[$targetTableName] kopieren"
+		$action = Get-sqmTransferString -Key 'Copy.Action' -FormatArgs @($Source, $SourceDatabase, $t, $Destination, $DestinationDatabase, $targetTableName)
 
 		if (-not $PSCmdlet.ShouldProcess($Destination, $action))
 		{
-			$results.Add([PSCustomObject]@{ Table = $t; DestinationTable = $targetTableName; RowsCopied = 0; Status = 'WhatIf'; Message = "WhatIf: $action"; ElapsedSeconds = 0 })
+			$results.Add([PSCustomObject]@{ Table = $t; DestinationTable = $targetTableName; RowsCopied = 0; Status = 'WhatIf'; Message = (Get-sqmTransferString -Key 'Common.WhatIf' -FormatArgs @($action)); ElapsedSeconds = 0 })
 			continue
 		}
 
@@ -160,7 +160,7 @@ function Copy-sqmTableData
 					Message		    = $null
 					ElapsedSeconds  = [math]::Round($sw.Elapsed.TotalSeconds, 1)
 				})
-			Write-sqmTransferLog -Message "$rows Zeile(n) kopiert: [$t] -> [$targetTableName] ($([math]::Round($sw.Elapsed.TotalSeconds, 1))s)." `
+			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Copy.RowsCopied' -FormatArgs @($rows, $t, $targetTableName, [math]::Round($sw.Elapsed.TotalSeconds, 1))) `
 								  -FunctionName $functionName -Level 'INFO'
 		}
 		catch
@@ -175,7 +175,7 @@ function Copy-sqmTableData
 					Message		    = $msg
 					ElapsedSeconds  = [math]::Round($sw.Elapsed.TotalSeconds, 1)
 				})
-			Write-sqmTransferLog -Message "Datenkopie fehlgeschlagen fuer [$t]: $msg" -FunctionName $functionName -Level 'ERROR'
+			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Copy.Failed' -FormatArgs @($t, $msg)) -FunctionName $functionName -Level 'ERROR'
 			if ($EnableException -and -not $ContinueOnError) { throw }
 		}
 	}

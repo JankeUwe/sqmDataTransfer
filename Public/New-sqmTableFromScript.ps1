@@ -70,7 +70,7 @@ function New-sqmTableFromScript
 		$batchNum++
 		if ([string]::IsNullOrWhiteSpace($batch)) { continue }
 
-		$action = "Batch $batchNum/$($ScriptBatches.Count) auf '$SqlInstance'.'$Database' ausfuehren"
+		$action = Get-sqmTransferString -Key 'NewTableFromScript.BatchAction' -FormatArgs @($batchNum, $ScriptBatches.Count, $SqlInstance, $Database)
 		if ($PSCmdlet.ShouldProcess("$SqlInstance.$Database", $action))
 		{
 			try
@@ -81,7 +81,7 @@ function New-sqmTableFromScript
 						Status	    = 'Success'
 						Message	    = $null
 					})
-				Write-sqmTransferLog -Message "Batch $batchNum erfolgreich ausgefuehrt auf '$SqlInstance'.'$Database'." `
+				Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'NewTableFromScript.BatchSuccess' -FormatArgs @($batchNum, $SqlInstance, $Database)) `
 									  -FunctionName $functionName -Level 'INFO'
 			}
 			catch
@@ -92,7 +92,7 @@ function New-sqmTableFromScript
 						Status	    = 'Failed'
 						Message	    = $msg
 					})
-				Write-sqmTransferLog -Message "Batch $batchNum fehlgeschlagen auf '$SqlInstance'.'$Database': $msg" `
+				Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'NewTableFromScript.BatchFailed' -FormatArgs @($batchNum, $SqlInstance, $Database, $msg)) `
 									  -FunctionName $functionName -Level 'ERROR'
 				if ($EnableException -and -not $ContinueOnError) { throw }
 			}
@@ -102,13 +102,13 @@ function New-sqmTableFromScript
 			$results.Add([PSCustomObject]@{
 					BatchNumber = $batchNum
 					Status	    = 'WhatIf'
-					Message	    = 'WhatIf: Batch wuerde ausgefuehrt.'
+					Message	    = Get-sqmTransferString -Key 'NewTableFromScript.BatchWhatIf'
 				})
 		}
 	}
 
 	$failCount = @($results | Where-Object Status -eq 'Failed').Count
-	$summaryMsg = "New-sqmTableFromScript abgeschlossen auf '$SqlInstance'.'$Database' - $($results.Count) Batch(es), $failCount Fehler."
+	$summaryMsg = Get-sqmTransferString -Key 'NewTableFromScript.Summary' -FormatArgs @($SqlInstance, $Database, $results.Count, $failCount)
 	Write-sqmTransferLog -Message $summaryMsg -FunctionName $functionName -Level 'INFO'
 
 	return $results

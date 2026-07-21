@@ -32,7 +32,7 @@ function Test-sqmTransferLoggingPath
 	}
 	catch
 	{
-		Write-Warning "Keine Schreibrechte auf '$Path' oder Pfad ungueltig: $($_.Exception.Message)"
+		Write-Warning (Get-sqmTransferString -Key 'LoggingPath.NotWritable' -FormatArgs @($Path, $_.Exception.Message))
 		return $false
 	}
 }

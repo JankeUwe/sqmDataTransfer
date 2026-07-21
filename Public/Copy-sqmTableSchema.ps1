@@ -87,12 +87,12 @@ function Copy-sqmTableSchema
 		if ($DestinationCredential) { $dstConnParams['SqlCredential'] = $DestinationCredential }
 		$dstServer = Connect-DbaInstance @dstConnParams
 		$targetVersion = Get-sqmSmoServerVersion -VersionMajor $dstServer.VersionMajor -VersionMinor $dstServer.VersionMinor
-		Write-sqmTransferLog -Message "Ziel '$Destination' erkannt als SQL Server $($dstServer.VersionMajor).$($dstServer.VersionMinor) -> TargetServerVersion $targetVersion." `
+		Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'CopySchema.TargetVersionDetected' -FormatArgs @($Destination, $dstServer.VersionMajor, $dstServer.VersionMinor, $targetVersion)) `
 							  -FunctionName $functionName -Level 'INFO'
 	}
 	catch
 	{
-		Write-sqmTransferLog -Message "Zielversion von '$Destination' konnte nicht ermittelt werden - scripte ohne TargetServerVersion (Quellsyntax): $($_.Exception.Message)" `
+		Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'CopySchema.TargetVersionFailed' -FormatArgs @($Destination, $_.Exception.Message)) `
 							  -FunctionName $functionName -Level 'WARNING'
 	}
 
@@ -113,16 +113,16 @@ function Copy-sqmTableSchema
 		# WICHTIG: nicht einfach 'return' (=$null) - der Aufrufer (Invoke-sqmTableTransfer) muss
 		# dies als fehlgeschlagene/nicht gefundene Tabelle erkennen koennen, statt es mangels
 		# jeglicher Failed-Ergebniszeile stillschweigend als Erfolg zu werten.
-		$msg = "Kein Script erzeugt fuer $($Table -join ', ') von '$Source'.'$SourceDatabase' - Tabelle(n) nicht gefunden: $($schema.NotFound -join ', ')."
+		$msg = Get-sqmTransferString -Key 'CopySchema.NoScript' -FormatArgs @(($Table -join ', '), $Source, $SourceDatabase, ($schema.NotFound -join ', '))
 		Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
 		Write-Warning $msg
 		return [PSCustomObject]@{ BatchNumber = 0; Status = 'NotFound'; Message = $msg }
 	}
 
-	$action = "$($schema.Tables.Count) Tabelle(n) auf '$Destination'.'$DestinationDatabase' anlegen: $($schema.Tables -join ', ')"
+	$action = Get-sqmTransferString -Key 'CopySchema.CreateAction' -FormatArgs @($schema.Tables.Count, $Destination, $DestinationDatabase, ($schema.Tables -join ', '))
 	if ($schema.SchemasGuarded -and $schema.SchemasGuarded.Count -gt 0)
 	{
-		$action += " (inkl. Schema-Absicherung: $($schema.SchemasGuarded -join ', '))"
+		$action += Get-sqmTransferString -Key 'CopySchema.SchemaGuardSuffix' -FormatArgs @($schema.SchemasGuarded -join ', ')
 	}
 	if ($PSCmdlet.ShouldProcess("$Destination.$DestinationDatabase", $action))
 	{
@@ -132,6 +132,6 @@ function Copy-sqmTableSchema
 	}
 	else
 	{
-		[PSCustomObject]@{ BatchNumber = 0; Status = 'WhatIf'; Message = "WhatIf: $action" }
+		[PSCustomObject]@{ BatchNumber = 0; Status = 'WhatIf'; Message = (Get-sqmTransferString -Key 'Common.WhatIf' -FormatArgs @($action)) }
 	}
 }

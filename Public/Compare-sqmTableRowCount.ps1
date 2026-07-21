@@ -97,7 +97,7 @@ function Compare-sqmTableRowCount
 		}
 		catch
 		{
-			$errMsg = "Quelle: $($_.Exception.Message)"
+			$errMsg = Get-sqmTransferString -Key 'Compare.SourceError' -FormatArgs @($_.Exception.Message)
 		}
 
 		try
@@ -106,14 +106,16 @@ function Compare-sqmTableRowCount
 		}
 		catch
 		{
-			$errMsg = if ($errMsg) { "$errMsg | Ziel: $($_.Exception.Message)" } else { "Ziel: $($_.Exception.Message)" }
+			$dstErrMsg = Get-sqmTransferString -Key 'Compare.DestError' -FormatArgs @($_.Exception.Message)
+			$errMsg = if ($errMsg) { "$errMsg | $dstErrMsg" } else { $dstErrMsg }
 		}
 
 		$match = ($null -ne $srcCount) -and ($null -ne $dstCount) -and ($srcCount -eq $dstCount)
 		$diff = if (($null -ne $srcCount) -and ($null -ne $dstCount)) { $dstCount - $srcCount } else { $null }
 
 		$logLevel = if ($errMsg) { 'ERROR' } elseif (-not $match) { 'WARNING' } else { 'INFO' }
-		$logMsg = "Zeilenvergleich [$schemaName.$tableName] -> [$dstSchemaName.$dstTableName]: Quelle=$srcCount Ziel=$dstCount Match=$match$(if ($errMsg) { " Fehler: $errMsg" })"
+		$errSuffix = if ($errMsg) { Get-sqmTransferString -Key 'Compare.ErrorSuffix' -FormatArgs @($errMsg) } else { '' }
+		$logMsg = Get-sqmTransferString -Key 'Compare.LogMessage' -FormatArgs @("$schemaName.$tableName", "$dstSchemaName.$dstTableName", $srcCount, $dstCount, $match, $errSuffix)
 		Write-sqmTransferLog -Message $logMsg -FunctionName $functionName -Level $logLevel
 
 		$results.Add([PSCustomObject]@{

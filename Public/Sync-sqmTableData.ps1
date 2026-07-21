@@ -174,7 +174,7 @@ function Sync-sqmTableData
 		$bracketed = "[$schemaName].[$tableName]"
 
 		$sw = [System.Diagnostics.Stopwatch]::StartNew()
-		Write-sqmTransferLog -Message "=== Sync '$qualified': '$Source'.'$SourceDatabase' -> '$Destination'.'$DestinationDatabase' ===" -FunctionName $functionName -Level 'INFO'
+		Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Sync.Start' -FormatArgs @($qualified, $Source, $SourceDatabase, $Destination, $DestinationDatabase)) -FunctionName $functionName -Level 'INFO'
 
 		try
 		{
@@ -190,7 +190,7 @@ ORDER BY ic.key_ordinal
 			$pkCols = @(Invoke-DbaQuery @dstConnParams -Query $pkQuery -As PSObject -EnableException | ForEach-Object { $_.ColumnName })
 			if ($pkCols.Count -eq 0)
 			{
-				throw "Keine PRIMARY KEY-Spalte(n) auf '$Destination'.'$DestinationDatabase'.$bracketed gefunden - Sync-sqmTableData benoetigt einen PK."
+				throw (Get-sqmTransferString -Key 'Sync.NoPrimaryKey' -FormatArgs @($Destination, $DestinationDatabase, $bracketed))
 			}
 
 			$colQuery = @"
@@ -208,22 +208,22 @@ ORDER BY c.column_id
 
 			# --- 2. Hash-Ausdruck bauen und (PK, Hash) auf beiden Seiten abfragen -----------
 			$binaryTypes = @('binary', 'varbinary', 'image')
-			$hashFragments = if ($hashColNames.Count -gt 0)
+			$hashFragments = [System.Collections.Generic.List[string]]::new()
+			foreach ($hc in $hashColNames)
 			{
-				foreach ($hc in $hashColNames)
+				$colMeta = $writableCols | Where-Object ColumnName -eq $hc | Select-Object -First 1
+				if ($binaryTypes -contains $colMeta.TypeName)
 				{
-					$colMeta = $writableCols | Where-Object ColumnName -eq $hc | Select-Object -First 1
-					if ($binaryTypes -contains $colMeta.TypeName)
-					{
-						"ISNULL(CONVERT(nvarchar(max), [$hc], 2), N'" + [char]1 + "')"
-					}
-					else
-					{
-						"ISNULL(CONVERT(nvarchar(max), [$hc]), N'" + [char]1 + "')"
-					}
+					$hashFragments.Add("ISNULL(CONVERT(nvarchar(max), [$hc], 2), N'" + [char]1 + "')")
+				}
+				else
+				{
+					$hashFragments.Add("ISNULL(CONVERT(nvarchar(max), [$hc]), N'" + [char]1 + "')")
 				}
 			}
-			else { , "N''" }
+			# CONCAT_WS verlangt mindestens 2 Werte nach dem Separator (3 Argumente insgesamt) -
+			# bei 0 oder 1 Hash-Spalten mit Konstanten auffuellen, statt eine SQL-Ausnahme zu riskieren.
+			while ($hashFragments.Count -lt 2) { $hashFragments.Add("N''") }
 			$hashExpr = "HASHBYTES('SHA2_256', CONCAT_WS(NCHAR(31), $($hashFragments -join ', ')))"
 			$pkSelectList = ($pkCols | ForEach-Object { "[$_]" }) -join ', '
 			$hashQuery = "SELECT $pkSelectList, $hashExpr AS __sqmt_hash FROM $bracketed"
@@ -243,7 +243,7 @@ ORDER BY c.column_id
 			$deleteKeys = @(if ($IncludeDelete) { @($dstMap.Keys | Where-Object { -not $srcMap.ContainsKey($_) }) })
 			$changedKeys = @($insertKeys + $updateKeys)
 
-			Write-sqmTransferLog -Message "Sync '$qualified': Quelle=$($srcRows.Count) Ziel=$($dstRows.Count) Neu=$($insertKeys.Count) Geaendert=$($updateKeys.Count) Geloescht=$($deleteKeys.Count)" `
+			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Sync.Diff' -FormatArgs @($qualified, $srcRows.Count, $dstRows.Count, $insertKeys.Count, $updateKeys.Count, $deleteKeys.Count)) `
 								  -FunctionName $functionName -Level 'INFO'
 
 			if ($changedKeys.Count -eq 0 -and $deleteKeys.Count -eq 0)
@@ -257,14 +257,14 @@ ORDER BY c.column_id
 				continue
 			}
 
-			$action = "Sync '$qualified': $($insertKeys.Count) neu, $($updateKeys.Count) geaendert, $($deleteKeys.Count) geloescht"
+			$action = Get-sqmTransferString -Key 'Sync.Action' -FormatArgs @($qualified, $insertKeys.Count, $updateKeys.Count, $deleteKeys.Count)
 			if (-not $PSCmdlet.ShouldProcess($Destination, $action))
 			{
 				$sw.Stop()
 				$results.Add([PSCustomObject]@{
 						Table = $qualified; SourceRows = $srcRows.Count; DestinationRows = $dstRows.Count
 						Inserted = $insertKeys.Count; Updated = $updateKeys.Count; Deleted = $deleteKeys.Count
-						Status = 'WhatIf'; Message = "WhatIf: $action"; ElapsedSeconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+						Status = 'WhatIf'; Message = (Get-sqmTransferString -Key 'Common.WhatIf' -FormatArgs @($action)); ElapsedSeconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
 					})
 				continue
 			}
@@ -342,7 +342,7 @@ ORDER BY c.column_id
 					Inserted = $insertKeys.Count; Updated = $updateKeys.Count; Deleted = $deleteKeys.Count
 					Status = 'Success'; Message = $null; ElapsedSeconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
 				})
-			Write-sqmTransferLog -Message "Sync '$qualified' abgeschlossen: +$($insertKeys.Count) ~$($updateKeys.Count) -$($deleteKeys.Count) ($([math]::Round($sw.Elapsed.TotalSeconds, 1))s)." `
+			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Sync.Completed' -FormatArgs @($qualified, $insertKeys.Count, $updateKeys.Count, $deleteKeys.Count, [math]::Round($sw.Elapsed.TotalSeconds, 1))) `
 								  -FunctionName $functionName -Level 'INFO'
 		}
 		catch
@@ -354,7 +354,7 @@ ORDER BY c.column_id
 					Inserted = 0; Updated = 0; Deleted = 0; Status = 'Failed'; Message = $msg
 					ElapsedSeconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
 				})
-			Write-sqmTransferLog -Message "Sync fuer '$qualified' fehlgeschlagen: $msg" -FunctionName $functionName -Level 'ERROR'
+			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Sync.Failed' -FormatArgs @($qualified, $msg)) -FunctionName $functionName -Level 'ERROR'
 			if ($EnableException -and -not $ContinueOnError) { throw }
 		}
 	}

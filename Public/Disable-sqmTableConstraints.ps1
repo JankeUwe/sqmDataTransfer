@@ -93,19 +93,19 @@ WHERE fk.parent_object_id = OBJECT_ID(N'[$schemaName].[$tableName]')
 				$fks = @(Invoke-DbaQuery @connParams -Query $fkQuery -As PSObject -EnableException)
 				foreach ($fk in $fks)
 				{
-					$action = "Foreign Key '$($fk.FkName)' auf '$qualified' deaktivieren"
+					$action = Get-sqmTransferString -Key 'Constraints.DisableFkAction' -FormatArgs @($fk.FkName, $qualified)
 					if ($PSCmdlet.ShouldProcess($qualified, $action))
 					{
 						try
 						{
 							Invoke-DbaQuery @connParams -Query "ALTER TABLE [$schemaName].[$tableName] NOCHECK CONSTRAINT [$($fk.FkName)]" -EnableException | Out-Null
 							$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'ForeignKey'; ObjectName = $fk.FkName; Action = 'Disable'; Status = 'Success' })
-							Write-sqmTransferLog -Message "FK '$($fk.FkName)' auf '$qualified' deaktiviert." -FunctionName $functionName -Level 'INFO'
+							Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.FkDisabled' -FormatArgs @($fk.FkName, $qualified)) -FunctionName $functionName -Level 'INFO'
 						}
 						catch
 						{
 							$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'ForeignKey'; ObjectName = $fk.FkName; Action = 'Disable'; Status = "Failed: $($_.Exception.Message)" })
-							Write-sqmTransferLog -Message "FK '$($fk.FkName)' auf '$qualified' konnte nicht deaktiviert werden: $($_.Exception.Message)" -FunctionName $functionName -Level 'ERROR'
+							Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.FkDisableFailed' -FormatArgs @($fk.FkName, $qualified, $_.Exception.Message)) -FunctionName $functionName -Level 'ERROR'
 						}
 					}
 					else
@@ -115,14 +115,14 @@ WHERE fk.parent_object_id = OBJECT_ID(N'[$schemaName].[$tableName]')
 				}
 				if ($fks.Count -eq 0)
 				{
-					Write-sqmTransferLog -Message "Keine aktiven Foreign Keys auf '$qualified' gefunden." -FunctionName $functionName -Level 'INFO'
+					Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.NoActiveFks' -FormatArgs @($qualified)) -FunctionName $functionName -Level 'INFO'
 				}
 			}
 			catch
 			{
-				$msg = "Fehler beim Ermitteln der Foreign Keys auf '$qualified': $($_.Exception.Message)"
+				$msg = Get-sqmTransferString -Key 'Constraints.FkQueryFailed' -FormatArgs @($qualified, $_.Exception.Message)
 				Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
-				$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'ForeignKey'; ObjectName = '(alle)'; Action = 'Disable'; Status = "Failed: $($_.Exception.Message)" })
+				$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'ForeignKey'; ObjectName = (Get-sqmTransferString -Key 'Common.All'); Action = 'Disable'; Status = "Failed: $($_.Exception.Message)" })
 			}
 		}
 
@@ -141,19 +141,19 @@ WHERE i.object_id = OBJECT_ID(N'[$schemaName].[$tableName]')
 				$idxs = @(Invoke-DbaQuery @connParams -Query $idxQuery -As PSObject -EnableException)
 				foreach ($idx in $idxs)
 				{
-					$action = "Index '$($idx.IndexName)' auf '$qualified' deaktivieren"
+					$action = Get-sqmTransferString -Key 'Constraints.DisableIdxAction' -FormatArgs @($idx.IndexName, $qualified)
 					if ($PSCmdlet.ShouldProcess($qualified, $action))
 					{
 						try
 						{
 							Invoke-DbaQuery @connParams -Query "ALTER INDEX [$($idx.IndexName)] ON [$schemaName].[$tableName] DISABLE" -EnableException | Out-Null
 							$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Index'; ObjectName = $idx.IndexName; Action = 'Disable'; Status = 'Success' })
-							Write-sqmTransferLog -Message "Index '$($idx.IndexName)' auf '$qualified' deaktiviert." -FunctionName $functionName -Level 'INFO'
+							Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.IdxDisabled' -FormatArgs @($idx.IndexName, $qualified)) -FunctionName $functionName -Level 'INFO'
 						}
 						catch
 						{
 							$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Index'; ObjectName = $idx.IndexName; Action = 'Disable'; Status = "Failed: $($_.Exception.Message)" })
-							Write-sqmTransferLog -Message "Index '$($idx.IndexName)' auf '$qualified' konnte nicht deaktiviert werden: $($_.Exception.Message)" -FunctionName $functionName -Level 'ERROR'
+							Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.IdxDisableFailed' -FormatArgs @($idx.IndexName, $qualified, $_.Exception.Message)) -FunctionName $functionName -Level 'ERROR'
 						}
 					}
 					else
@@ -163,14 +163,14 @@ WHERE i.object_id = OBJECT_ID(N'[$schemaName].[$tableName]')
 				}
 				if ($idxs.Count -eq 0)
 				{
-					Write-sqmTransferLog -Message "Keine aktiven nicht-geclusterten Indizes auf '$qualified' gefunden." -FunctionName $functionName -Level 'INFO'
+					Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.NoActiveIndexes' -FormatArgs @($qualified)) -FunctionName $functionName -Level 'INFO'
 				}
 			}
 			catch
 			{
-				$msg = "Fehler beim Ermitteln der Indizes auf '$qualified': $($_.Exception.Message)"
+				$msg = Get-sqmTransferString -Key 'Constraints.IdxQueryFailed' -FormatArgs @($qualified, $_.Exception.Message)
 				Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
-				$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Index'; ObjectName = '(alle)'; Action = 'Disable'; Status = "Failed: $($_.Exception.Message)" })
+				$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Index'; ObjectName = (Get-sqmTransferString -Key 'Common.All'); Action = 'Disable'; Status = "Failed: $($_.Exception.Message)" })
 			}
 		}
 	}

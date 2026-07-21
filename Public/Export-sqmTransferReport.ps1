@@ -256,13 +256,13 @@ $($rowCountRowsHtml.ToString())
 		$dir = Split-Path $FilePath -Parent
 		if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 		[System.IO.File]::WriteAllText($FilePath, $html, (New-Object System.Text.UTF8Encoding($false)))
-		Write-sqmTransferLog -Message "HTML-Bericht geschrieben nach '$FilePath'." -FunctionName $MyInvocation.MyCommand.Name -Level 'INFO'
+		Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'ExportReport.Written' -FormatArgs @($FilePath)) -FunctionName $MyInvocation.MyCommand.Name -Level 'INFO'
 		Invoke-sqmTransferOpenReport -HtmlFile $FilePath -NoOpen:$NoOpen
 	}
 	catch
 	{
-		Write-Warning "Konnte HTML-Bericht nicht nach '$FilePath' schreiben: $($_.Exception.Message)"
-		Write-sqmTransferLog -Message "Fehler beim Schreiben des HTML-Berichts nach '$FilePath': $($_.Exception.Message)" -FunctionName $MyInvocation.MyCommand.Name -Level 'ERROR'
+		Write-Warning (Get-sqmTransferString -Key 'ExportReport.WriteFailedWarning' -FormatArgs @($FilePath, $_.Exception.Message))
+		Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'ExportReport.WriteFailedLog' -FormatArgs @($FilePath, $_.Exception.Message)) -FunctionName $MyInvocation.MyCommand.Name -Level 'ERROR'
 	}
 
 	if ($PassThru) { return $html }

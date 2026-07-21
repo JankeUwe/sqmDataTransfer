@@ -102,7 +102,7 @@ function Export-sqmTableSchema
 	)
 
 	$functionName = $MyInvocation.MyCommand.Name
-	Write-sqmTransferLog -Message "Scripte Metadaten von '$SqlInstance'.'$Database' fuer Tabelle(n): $($Table -join ', ')" `
+	Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'ExportSchema.Start' -FormatArgs @($SqlInstance, $Database, ($Table -join ', '))) `
 						  -FunctionName $functionName -Level 'INFO'
 
 	$connParams = @{ SqlInstance = $SqlInstance; ErrorAction = 'Stop' }
@@ -114,7 +114,7 @@ function Export-sqmTableSchema
 	}
 	catch
 	{
-		$msg = "Verbindung zu '$SqlInstance' fehlgeschlagen: $($_.Exception.Message)"
+		$msg = Get-sqmTransferString -Key 'ExportSchema.ConnectFailed' -FormatArgs @($SqlInstance, $_.Exception.Message)
 		Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
 		throw $msg
 	}
@@ -122,7 +122,7 @@ function Export-sqmTableSchema
 	$db = $server.Databases[$Database]
 	if (-not $db)
 	{
-		$msg = "Datenbank '$Database' auf '$SqlInstance' nicht gefunden."
+		$msg = Get-sqmTransferString -Key 'ExportSchema.DatabaseNotFound' -FormatArgs @($Database, $SqlInstance)
 		Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
 		throw $msg
 	}
@@ -152,7 +152,7 @@ function Export-sqmTableSchema
 		if ($smoTable.IsPartitioned)
 		{
 			$anyPartitioned = $true
-			$warnings.Add("$schemaName.${tableName}: Tabelle war partitioniert (Partitionsschema '$($smoTable.PartitionScheme)') - wird ohne Partitionierung auf dem Standard-Filegroup (PRIMARY) angelegt.")
+			$warnings.Add((Get-sqmTransferString -Key 'ExportSchema.PartitionedWarning' -FormatArgs @($schemaName, $tableName, $smoTable.PartitionScheme)))
 		}
 
 		# CLR-basierte benutzerdefinierte Typen: Scripting der Tabelle funktioniert, aber die
@@ -161,7 +161,7 @@ function Export-sqmTableSchema
 		{
 			if ($col.DataType.SqlDataType.ToString() -eq 'UserDefinedType')
 			{
-				$warnings.Add("$schemaName.${tableName}: Spalte '$($col.Name)' nutzt den CLR-Typ '$($col.DataType.Schema).$($col.DataType.Name)' - die zugehoerige Assembly muss manuell auf dem Ziel bereitgestellt werden.")
+				$warnings.Add((Get-sqmTransferString -Key 'ExportSchema.ClrWarning' -FormatArgs @($schemaName, $tableName, $col.Name, $col.DataType.Schema, $col.DataType.Name)))
 			}
 		}
 
@@ -170,7 +170,7 @@ function Export-sqmTableSchema
 
 	if ($notFound.Count -gt 0)
 	{
-		$msg = "Tabelle(n) nicht gefunden auf '$SqlInstance'.'$Database': $($notFound -join ', ')"
+		$msg = Get-sqmTransferString -Key 'ExportSchema.TablesNotFound' -FormatArgs @($SqlInstance, $Database, ($notFound -join ', '))
 		Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
 		Write-Warning $msg
 	}
@@ -222,7 +222,7 @@ function Export-sqmTableSchema
 		}
 		catch
 		{
-			$msg = "Scripting fehlgeschlagen: $($_.Exception.Message)"
+			$msg = Get-sqmTransferString -Key 'ExportSchema.ScriptingFailed' -FormatArgs @($_.Exception.Message)
 			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
 			throw
 		}
@@ -246,15 +246,16 @@ function Export-sqmTableSchema
 			$dir = Split-Path $FilePath -Parent
 			if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 			[System.IO.File]::WriteAllText($FilePath, $combinedScript, (New-Object System.Text.UTF8Encoding($false)))
-			Write-sqmTransferLog -Message "Script geschrieben nach '$FilePath'." -FunctionName $functionName -Level 'INFO'
+			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'ExportSchema.ScriptWritten' -FormatArgs @($FilePath)) -FunctionName $functionName -Level 'INFO'
 		}
 		catch
 		{
-			Write-Warning "Konnte Script nicht nach '$FilePath' schreiben: $($_.Exception.Message)"
+			Write-Warning (Get-sqmTransferString -Key 'ExportSchema.WriteFailed' -FormatArgs @($FilePath, $_.Exception.Message))
 		}
 	}
 
-	Write-sqmTransferLog -Message "$($smoTables.Count) Tabelle(n) erfolgreich gescriptet ($($batches.Count) Batch(es), $($schemasGuarded.Count) Schema(s) abgesichert$(if ($anyPartitioned) { ', Partitionierung entfernt' }))." `
+	$partitionSuffix = if ($anyPartitioned) { Get-sqmTransferString -Key 'ExportSchema.PartitionRemovedSuffix' } else { '' }
+	Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'ExportSchema.Summary' -FormatArgs @($smoTables.Count, $batches.Count, $schemasGuarded.Count, $partitionSuffix)) `
 						  -FunctionName $functionName -Level 'INFO'
 
 	[PSCustomObject]@{

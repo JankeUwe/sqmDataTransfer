@@ -90,7 +90,7 @@ function Show-sqmTableTransferGui
 	# --- Main form ---------------------------------------------------------------
 	$form = New-Object System.Windows.Forms.Form
 	$Global:__sqmDataTransferGuiCtx.Form = $form
-	$form.Text = 'sqmDataTransfer'
+	$form.Text = Get-sqmTransferString -Key 'Gui.Title'
 	$form.Size = New-Object System.Drawing.Size(980, 900)
 	$form.StartPosition = 'CenterScreen'
 	$form.BackColor = $cPanel
@@ -109,7 +109,7 @@ function Show-sqmTableTransferGui
 		$grp.Anchor = 'Top,Left,Right'
 
 		$lblInst = New-Object System.Windows.Forms.Label
-		$lblInst.Text = 'Instanz:'
+		$lblInst.Text = Get-sqmTransferString -Key 'Gui.Instance'
 		$lblInst.Location = New-Object System.Drawing.Point(10, 25)
 		$lblInst.Size = New-Object System.Drawing.Size(90, 20)
 		$lblInst.ForeColor = $cDim
@@ -120,14 +120,14 @@ function Show-sqmTableTransferGui
 		$txtInst.Anchor = 'Top,Left,Right'
 
 		$btnConnect = New-Object System.Windows.Forms.Button
-		$btnConnect.Text = 'Verbinden'
+		$btnConnect.Text = Get-sqmTransferString -Key 'Gui.Connect'
 		Style-Button $btnConnect
 		$btnConnect.Location = New-Object System.Drawing.Point(($width - 95), 21)
 		$btnConnect.Size = New-Object System.Drawing.Size(85, 24)
 		$btnConnect.Anchor = 'Top,Right'
 
 		$lblDb = New-Object System.Windows.Forms.Label
-		$lblDb.Text = 'Datenbank:'
+		$lblDb.Text = Get-sqmTransferString -Key 'Gui.Database'
 		$lblDb.Location = New-Object System.Drawing.Point(10, 52)
 		$lblDb.Size = New-Object System.Drawing.Size(90, 20)
 		$lblDb.ForeColor = $cDim
@@ -141,7 +141,7 @@ function Show-sqmTableTransferGui
 		$cmbDb.Anchor = 'Top,Left,Right'
 
 		$chkSqlAuth = New-Object System.Windows.Forms.CheckBox
-		$chkSqlAuth.Text = 'SQL-Authentifizierung'
+		$chkSqlAuth.Text = Get-sqmTransferString -Key 'Gui.SqlAuth'
 		$chkSqlAuth.ForeColor = $cText
 		$chkSqlAuth.Location = New-Object System.Drawing.Point(10, 78)
 		$chkSqlAuth.Size = New-Object System.Drawing.Size(180, 22)
@@ -155,7 +155,7 @@ function Show-sqmTableTransferGui
 		$lblConnStatus.AutoEllipsis = $true
 
 		$lblUser = New-Object System.Windows.Forms.Label
-		$lblUser.Text = 'Login:'
+		$lblUser.Text = Get-sqmTransferString -Key 'Gui.Login'
 		$lblUser.Location = New-Object System.Drawing.Point(10, 105)
 		$lblUser.Size = New-Object System.Drawing.Size(90, 20)
 		$lblUser.ForeColor = $cDim
@@ -167,7 +167,7 @@ function Show-sqmTableTransferGui
 		$txtUser.Enabled = $false
 
 		$lblPass = New-Object System.Windows.Forms.Label
-		$lblPass.Text = 'Passwort:'
+		$lblPass.Text = Get-sqmTransferString -Key 'Gui.Password'
 		$lblPass.Location = New-Object System.Drawing.Point(10, 132)
 		$lblPass.Size = New-Object System.Drawing.Size(90, 20)
 		$lblPass.ForeColor = $cDim
@@ -203,7 +203,7 @@ function Show-sqmTableTransferGui
 		$btnConnect.Add_Click({
 				$ctx = $Global:__sqmDataTransferGuiCtx
 				$lblConnStatus.ForeColor = $ctx.cDim
-				$lblConnStatus.Text = 'Verbinde...'
+				$lblConnStatus.Text = Get-sqmTransferString -Key 'Gui.Connecting'
 				$ctx.Form.Refresh()
 				[System.Windows.Forms.Application]::DoEvents()
 				try
@@ -221,12 +221,12 @@ function Show-sqmTableTransferGui
 					foreach ($n in $dbNames) { $cmbDb.Items.Add($n) | Out-Null }
 					if ($currentText) { $cmbDb.Text = $currentText }
 					$lblConnStatus.ForeColor = $ctx.cOk
-					$lblConnStatus.Text = "verbunden ($($dbNames.Count) DBs, $($srv.VersionString))"
+					$lblConnStatus.Text = Get-sqmTransferString -Key 'Gui.Connected' -FormatArgs @($dbNames.Count, $srv.VersionString)
 				}
 				catch
 				{
 					$lblConnStatus.ForeColor = $ctx.cErr
-					$lblConnStatus.Text = "Fehler: $($_.Exception.Message)"
+					$lblConnStatus.Text = Get-sqmTransferString -Key 'Gui.ConnectError' -FormatArgs @($_.Exception.Message)
 				}
 			}.GetNewClosure())
 
@@ -235,8 +235,8 @@ function Show-sqmTableTransferGui
 		$panel
 	}
 
-	$srcPanel = New-InstancePanel 'Quelle (Source)' 12 12 460
-	$dstPanel = New-InstancePanel 'Ziel (Destination)' 490 12 460
+	$srcPanel = New-InstancePanel (Get-sqmTransferString -Key 'Gui.SourceGroup') 12 12 460
+	$dstPanel = New-InstancePanel (Get-sqmTransferString -Key 'Gui.DestinationGroup') 490 12 460
 	$form.Controls.Add($srcPanel.GroupBox)
 	$form.Controls.Add($dstPanel.GroupBox)
 
@@ -252,25 +252,25 @@ function Show-sqmTableTransferGui
 
 	# --- Table list + Load/Select buttons ------------------------------------------
 	$lblTables = New-Object System.Windows.Forms.Label
-	$lblTables.Text = 'Tabellen:'
+	$lblTables.Text = Get-sqmTransferString -Key 'Gui.Tables'
 	$lblTables.Location = New-Object System.Drawing.Point(12, 196)
 	$lblTables.Size = New-Object System.Drawing.Size(70, 20)
 	$lblTables.ForeColor = $cDim
 
 	$btnSelectAll = New-Object System.Windows.Forms.Button
-	$btnSelectAll.Text = 'Alle'
+	$btnSelectAll.Text = Get-sqmTransferString -Key 'Gui.SelectAll'
 	Style-Button $btnSelectAll
 	$btnSelectAll.Location = New-Object System.Drawing.Point(85, 192)
 	$btnSelectAll.Size = New-Object System.Drawing.Size(65, 26)
 
 	$btnSelectNone = New-Object System.Windows.Forms.Button
-	$btnSelectNone.Text = 'Keine'
+	$btnSelectNone.Text = Get-sqmTransferString -Key 'Gui.SelectNone'
 	Style-Button $btnSelectNone
 	$btnSelectNone.Location = New-Object System.Drawing.Point(155, 192)
 	$btnSelectNone.Size = New-Object System.Drawing.Size(65, 26)
 
 	$btnLoadTables = New-Object System.Windows.Forms.Button
-	$btnLoadTables.Text = 'Tabellen laden'
+	$btnLoadTables.Text = Get-sqmTransferString -Key 'Gui.LoadTables'
 	Style-Button $btnLoadTables
 	$btnLoadTables.Location = New-Object System.Drawing.Point(830, 192)
 	$btnLoadTables.Size = New-Object System.Drawing.Size(120, 26)
@@ -293,12 +293,12 @@ function Show-sqmTableTransferGui
 	$colChk = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
 	$colChk.Name = 'Chk'; $colChk.HeaderText = ''; $colChk.Width = 32
 	$colName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-	$colName.Name = 'TableName'; $colName.HeaderText = 'Tabelle'; $colName.ReadOnly = $true
+	$colName.Name = 'TableName'; $colName.HeaderText = Get-sqmTransferString -Key 'Gui.ColTable'; $colName.ReadOnly = $true
 	$colName.AutoSizeMode = 'Fill'
 	$colAction = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-	$colAction.Name = 'Action'; $colAction.HeaderText = 'Aktion'; $colAction.ReadOnly = $true; $colAction.Width = 110
+	$colAction.Name = 'Action'; $colAction.HeaderText = Get-sqmTransferString -Key 'Gui.ColAction'; $colAction.ReadOnly = $true; $colAction.Width = 110
 	$colRows = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-	$colRows.Name = 'RowCount'; $colRows.HeaderText = 'Zeilen (Quelle)'; $colRows.ReadOnly = $true; $colRows.Width = 120
+	$colRows.Name = 'RowCount'; $colRows.HeaderText = Get-sqmTransferString -Key 'Gui.ColRowCount'; $colRows.ReadOnly = $true; $colRows.Width = 120
 	$colRows.DefaultCellStyle.Alignment = 'MiddleRight'
 
 	$dgvTables.Columns.AddRange([System.Windows.Forms.DataGridViewColumn[]]@($colChk, $colName, $colAction, $colRows))
@@ -331,19 +331,19 @@ function Show-sqmTableTransferGui
 				foreach ($tbl in $tables)
 				{
 					$fullName = "$($tbl.Schema).$($tbl.Name)"
-					$action = if ($null -eq $dstExisting) { '?' }
-					elseif ($dstExisting -contains $fullName) { '-> Transfer' }
-					else { '+ Anlegen' }
+					$action = if ($null -eq $dstExisting) { Get-sqmTransferString -Key 'Gui.ActionUnknown' }
+					elseif ($dstExisting -contains $fullName) { Get-sqmTransferString -Key 'Gui.ActionTransfer' }
+					else { Get-sqmTransferString -Key 'Gui.ActionCreate' }
 					$dgvTables.Rows.Add($false, $fullName, $action, '') | Out-Null
 				}
 				if ($dgvTables.Rows.Count -eq 0)
 				{
-					[System.Windows.Forms.MessageBox]::Show('Keine Tabellen in dieser Datenbank gefunden.', 'sqmDataTransfer', 'OK', 'Information') | Out-Null
+					[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.NoTablesFound'), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Information') | Out-Null
 				}
 			}
 			catch
 			{
-				[System.Windows.Forms.MessageBox]::Show("Tabellen konnten nicht geladen werden:`n$($_.Exception.Message)", 'sqmDataTransfer', 'OK', 'Error') | Out-Null
+				[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.TablesLoadError' -FormatArgs @($_.Exception.Message)), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Error') | Out-Null
 			}
 		})
 
@@ -397,66 +397,66 @@ function Show-sqmTableTransferGui
 
 	# --- Options ---------------------------------------------------------------
 	$grpOpt = New-Object System.Windows.Forms.GroupBox
-	$grpOpt.Text = 'Optionen'
+	$grpOpt.Text = Get-sqmTransferString -Key 'Gui.OptionsGroup'
 	$grpOpt.ForeColor = $cText
 	$grpOpt.Location = New-Object System.Drawing.Point(12, 380)
 	$grpOpt.Size = New-Object System.Drawing.Size(938, 140)
 	$grpOpt.Anchor = 'Top,Left,Right'
 
 	$chkScriptMeta = New-Object System.Windows.Forms.CheckBox
-	$chkScriptMeta.Text = 'Fehlende Tabellen aus Quellmetadaten auf Ziel anlegen'
+	$chkScriptMeta.Text = Get-sqmTransferString -Key 'Gui.ScriptMetadata'
 	$chkScriptMeta.ForeColor = $cText
 	$chkScriptMeta.Location = New-Object System.Drawing.Point(15, 25)
 	$chkScriptMeta.Size = New-Object System.Drawing.Size(360, 22)
 
 	$chkFks = New-Object System.Windows.Forms.CheckBox
-	$chkFks.Text = 'Foreign Keys ein-/ausschalten'
+	$chkFks.Text = Get-sqmTransferString -Key 'Gui.ToggleFks'
 	$chkFks.ForeColor = $cText
 	$chkFks.Checked = $true
 	$chkFks.Location = New-Object System.Drawing.Point(15, 50)
 	$chkFks.Size = New-Object System.Drawing.Size(230, 22)
 
 	$chkIdx = New-Object System.Windows.Forms.CheckBox
-	$chkIdx.Text = 'Indizes ein-/ausschalten'
+	$chkIdx.Text = Get-sqmTransferString -Key 'Gui.ToggleIndexes'
 	$chkIdx.ForeColor = $cText
 	$chkIdx.Checked = $true
 	$chkIdx.Location = New-Object System.Drawing.Point(15, 75)
 	$chkIdx.Size = New-Object System.Drawing.Size(230, 22)
 
 	$chkKeepIdentity = New-Object System.Windows.Forms.CheckBox
-	$chkKeepIdentity.Text = 'Identity-Werte der Quelle beibehalten (KeepIdentity)'
+	$chkKeepIdentity.Text = Get-sqmTransferString -Key 'Gui.KeepIdentity'
 	$chkKeepIdentity.ForeColor = $cText
 	$chkKeepIdentity.Checked = $true
 	$chkKeepIdentity.Location = New-Object System.Drawing.Point(15, 100)
 	$chkKeepIdentity.Size = New-Object System.Drawing.Size(360, 22)
 
 	$chkTruncate = New-Object System.Windows.Forms.CheckBox
-	$chkTruncate.Text = 'Zieltabelle vor Kopie leeren (TRUNCATE)'
+	$chkTruncate.Text = Get-sqmTransferString -Key 'Gui.Truncate'
 	$chkTruncate.ForeColor = $cText
 	$chkTruncate.Location = New-Object System.Drawing.Point(390, 25)
 	$chkTruncate.Size = New-Object System.Drawing.Size(300, 22)
 
 	$chkRevalidate = New-Object System.Windows.Forms.CheckBox
-	$chkRevalidate.Text = 'FKs nach Aktivierung neu validieren (WITH CHECK)'
+	$chkRevalidate.Text = Get-sqmTransferString -Key 'Gui.Revalidate'
 	$chkRevalidate.ForeColor = $cText
 	$chkRevalidate.Checked = $true
 	$chkRevalidate.Location = New-Object System.Drawing.Point(390, 50)
 	$chkRevalidate.Size = New-Object System.Drawing.Size(340, 22)
 
 	$chkWhatIf = New-Object System.Windows.Forms.CheckBox
-	$chkWhatIf.Text = 'Nur simulieren (WhatIf)'
+	$chkWhatIf.Text = Get-sqmTransferString -Key 'Gui.WhatIf'
 	$chkWhatIf.ForeColor = $cWarn
 	$chkWhatIf.Location = New-Object System.Drawing.Point(390, 75)
 	$chkWhatIf.Size = New-Object System.Drawing.Size(230, 22)
 
 	$chkSkipCompleted = New-Object System.Windows.Forms.CheckBox
-	$chkSkipCompleted.Text = 'Bereits vollstaendige Tabellen ueberspringen (Wiederanlauf)'
+	$chkSkipCompleted.Text = Get-sqmTransferString -Key 'Gui.SkipCompleted'
 	$chkSkipCompleted.ForeColor = $cText
 	$chkSkipCompleted.Location = New-Object System.Drawing.Point(390, 100)
 	$chkSkipCompleted.Size = New-Object System.Drawing.Size(340, 22)
 
 	$lblBatch = New-Object System.Windows.Forms.Label
-	$lblBatch.Text = 'Batchgroesse:'
+	$lblBatch.Text = Get-sqmTransferString -Key 'Gui.BatchSize'
 	$lblBatch.Location = New-Object System.Drawing.Point(740, 27)
 	$lblBatch.Size = New-Object System.Drawing.Size(90, 20)
 	$lblBatch.ForeColor = $cDim
@@ -477,14 +477,14 @@ function Show-sqmTableTransferGui
 	# Ein Bericht wird nach jedem Lauf immer erzeugt (wie bei sqmSQLTool) - hier laesst sich nur
 	# der Zielordner ueberschreiben und das automatische Oeffnen abschalten (-NoOpen).
 	$grpReport = New-Object System.Windows.Forms.GroupBox
-	$grpReport.Text = 'HTML-Bericht (wird immer erzeugt)'
+	$grpReport.Text = Get-sqmTransferString -Key 'Gui.ReportGroup'
 	$grpReport.ForeColor = $cText
 	$grpReport.Location = New-Object System.Drawing.Point(12, 530)
 	$grpReport.Size = New-Object System.Drawing.Size(938, 58)
 	$grpReport.Anchor = 'Top,Left,Right'
 
 	$lblReportPath = New-Object System.Windows.Forms.Label
-	$lblReportPath.Text = 'Zielordner:'
+	$lblReportPath.Text = Get-sqmTransferString -Key 'Gui.ReportFolder'
 	$lblReportPath.Location = New-Object System.Drawing.Point(15, 27)
 	$lblReportPath.Size = New-Object System.Drawing.Size(90, 20)
 	$lblReportPath.ForeColor = $cDim
@@ -497,7 +497,7 @@ function Show-sqmTableTransferGui
 	$txtReportPath.Text = Get-sqmTransferConfig -Key 'OutputPath'
 
 	$btnBrowseReport = New-Object System.Windows.Forms.Button
-	$btnBrowseReport.Text = '...'
+	$btnBrowseReport.Text = Get-sqmTransferString -Key 'Gui.Browse'
 	Style-Button $btnBrowseReport
 	$btnBrowseReport.Location = New-Object System.Drawing.Point(755, 22)
 	$btnBrowseReport.Size = New-Object System.Drawing.Size(40, 24)
@@ -509,7 +509,7 @@ function Show-sqmTableTransferGui
 		})
 
 	$chkNoOpen = New-Object System.Windows.Forms.CheckBox
-	$chkNoOpen.Text = 'Nicht automatisch oeffnen'
+	$chkNoOpen.Text = Get-sqmTransferString -Key 'Gui.NoAutoOpen'
 	$chkNoOpen.ForeColor = $cText
 	$chkNoOpen.Checked = $false
 	$chkNoOpen.Location = New-Object System.Drawing.Point(805, 26)
@@ -521,14 +521,14 @@ function Show-sqmTableTransferGui
 
 	# --- Run / Close buttons ------------------------------------------------------
 	$btnRun = New-Object System.Windows.Forms.Button
-	$btnRun.Text = 'Transfer starten'
+	$btnRun.Text = Get-sqmTransferString -Key 'Gui.RunButton'
 	Style-Button $btnRun
 	$btnRun.BackColor = $cAccent
 	$btnRun.Location = New-Object System.Drawing.Point(12, 600)
 	$btnRun.Size = New-Object System.Drawing.Size(160, 32)
 
 	$btnClose = New-Object System.Windows.Forms.Button
-	$btnClose.Text = 'Schliessen'
+	$btnClose.Text = Get-sqmTransferString -Key 'Gui.CloseButton'
 	Style-Button $btnClose
 	$btnClose.Location = New-Object System.Drawing.Point(182, 600)
 	$btnClose.Size = New-Object System.Drawing.Size(100, 32)
@@ -545,7 +545,7 @@ function Show-sqmTableTransferGui
 
 	# --- Log output ----------------------------------------------------------------
 	$lblLog = New-Object System.Windows.Forms.Label
-	$lblLog.Text = 'Protokoll:'
+	$lblLog.Text = Get-sqmTransferString -Key 'Gui.LogLabel'
 	$lblLog.Location = New-Object System.Drawing.Point(12, 640)
 	$lblLog.Size = New-Object System.Drawing.Size(200, 20)
 	$lblLog.ForeColor = $cDim
@@ -565,7 +565,7 @@ function Show-sqmTableTransferGui
 
 	# --- Result grid -----------------------------------------------------------
 	$lblGrid = New-Object System.Windows.Forms.Label
-	$lblGrid.Text = 'Ergebnis (je Tabelle/Schritt):'
+	$lblGrid.Text = Get-sqmTransferString -Key 'Gui.ResultLabel'
 	$lblGrid.Location = New-Object System.Drawing.Point(12, 758)
 	$lblGrid.Size = New-Object System.Drawing.Size(300, 20)
 	$lblGrid.ForeColor = $cDim
@@ -591,17 +591,17 @@ function Show-sqmTableTransferGui
 			$selectedTables = @(foreach ($row in $dgvTables.Rows) { if ([bool]$row.Cells[0].Value) { $row.Cells[1].Value } })
 			if ($selectedTables.Count -eq 0)
 			{
-				[System.Windows.Forms.MessageBox]::Show('Bitte mindestens eine Tabelle auswaehlen.', 'sqmDataTransfer', 'OK', 'Warning') | Out-Null
+				[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.SelectAtLeastOneTable'), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Warning') | Out-Null
 				return
 			}
 			if (-not $srcPanel.Instance.Text -or -not $srcPanel.Database.Text -or -not $dstPanel.Instance.Text -or -not $dstPanel.Database.Text)
 			{
-				[System.Windows.Forms.MessageBox]::Show('Bitte Quelle und Ziel (Instanz + Datenbank) angeben.', 'sqmDataTransfer', 'OK', 'Warning') | Out-Null
+				[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.SpecifySourceAndDest'), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Warning') | Out-Null
 				return
 			}
 
 			$btnRun.Enabled = $false
-			$lblStatus.Text = 'Transfer laeuft...'
+			$lblStatus.Text = Get-sqmTransferString -Key 'Gui.TransferRunning'
 			$txtLog.Clear()
 			$dgv.DataSource = $null
 			$form.Refresh()
@@ -641,7 +641,7 @@ function Show-sqmTableTransferGui
 
 				$failCount = @($results | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound')).Count
 				$lblStatus.ForeColor = if ($failCount -gt 0) { $cErr } else { $cOk }
-				$lblStatus.Text = "Fertig - $($results.Count) Schritt(e), $failCount mit Fehler/Mismatch/NotFound."
+				$lblStatus.Text = Get-sqmTransferString -Key 'Gui.TransferDone' -FormatArgs @($results.Count, $failCount)
 
 				# Tagesaktuelle Logdatei fuer diese Funktion anzeigen
 				try
@@ -660,8 +660,8 @@ function Show-sqmTableTransferGui
 			catch
 			{
 				$lblStatus.ForeColor = $cErr
-				$lblStatus.Text = 'Fehler beim Transfer.'
-				[System.Windows.Forms.MessageBox]::Show("Transfer fehlgeschlagen:`n$($_.Exception.Message)", 'sqmDataTransfer', 'OK', 'Error') | Out-Null
+				$lblStatus.Text = Get-sqmTransferString -Key 'Gui.TransferError'
+				[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.TransferFailedBox' -FormatArgs @($_.Exception.Message)), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Error') | Out-Null
 			}
 			finally
 			{

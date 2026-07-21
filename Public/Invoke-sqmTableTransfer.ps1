@@ -217,7 +217,7 @@ function Invoke-sqmTableTransfer
 			return "dbo.$Name"
 		}
 
-		Write-sqmTransferLog -Message "Start Invoke-sqmTableTransfer: '$Source'.'$SourceDatabase' -> '$Destination'.'$DestinationDatabase' | Tabellen: $($Table -join ', ')" `
+		Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.Start' -FormatArgs @($Source, $SourceDatabase, $Destination, $DestinationDatabase, ($Table -join ', '))) `
 							  -FunctionName $functionName -Level 'INFO'
 
 		# ------------------------------------------------------------------
@@ -227,7 +227,7 @@ function Invoke-sqmTableTransfer
 		if ($SkipCompleted)
 		{
 			$originalCount = @($Table).Count
-			Write-sqmTransferLog -Message "SkipCompleted aktiv - pruefe $originalCount Tabelle(n) auf bereits abgeschlossenen Transfer." `
+			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.SkipCompletedChecking' -FormatArgs @($originalCount)) `
 								  -FunctionName $functionName -Level 'INFO'
 			try
 			{
@@ -242,19 +242,19 @@ function Invoke-sqmTableTransfer
 					foreach ($doneTable in $alreadyDone)
 					{
 						$doneDetail = $preCompare | Where-Object Table -eq $doneTable | Select-Object -First 1
-						_AddResult $doneTable 'SkipCompleted' 'Skipped' "Quelle und Ziel haben bereits identische Zeilenzahl ($($doneDetail.SourceRows)) - Transfer uebersprungen."
+						_AddResult $doneTable 'SkipCompleted' 'Skipped' (Get-sqmTransferString -Key 'InvokeTransfer.SkipCompletedResultMsg' -FormatArgs @($doneDetail.SourceRows))
 					}
 					$Table = @($Table | Where-Object { $alreadyDone -notcontains (_NormalizeTableName $_) })
 				}
 
-				$msg = "SkipCompleted: $($alreadyDone.Count) von $originalCount Tabelle(n) bereits vollstaendig - werden uebersprungen. Verbleibend: $(@($Table).Count)."
+				$msg = Get-sqmTransferString -Key 'InvokeTransfer.SkipCompletedSummary' -FormatArgs @($alreadyDone.Count, $originalCount, @($Table).Count)
 				Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'INFO'
 				Write-Host $msg -ForegroundColor Cyan
 			}
 			catch
 			{
-				Write-Warning "SkipCompleted-Pruefung fehlgeschlagen, alle Tabellen werden regulaer verarbeitet: $($_.Exception.Message)"
-				Write-sqmTransferLog -Message "SkipCompleted-Pruefung fehlgeschlagen: $($_.Exception.Message)" -FunctionName $functionName -Level 'ERROR'
+				Write-Warning (Get-sqmTransferString -Key 'InvokeTransfer.SkipCompletedCheckFailedWarning' -FormatArgs @($_.Exception.Message))
+				Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.SkipCompletedCheckFailedLog' -FormatArgs @($_.Exception.Message)) -FunctionName $functionName -Level 'ERROR'
 			}
 		}
 	}
@@ -263,7 +263,7 @@ function Invoke-sqmTableTransfer
 	{
 		foreach ($t in $Table)
 		{
-			Write-sqmTransferLog -Message "=== Verarbeite Tabelle '$t' ===" -FunctionName $functionName -Level 'INFO'
+			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.ProcessingTable' -FormatArgs @($t)) -FunctionName $functionName -Level 'INFO'
 
 			# ------------------------------------------------------------------
 			# 1. Metadaten scripten + auf Ziel anlegen (falls noch nicht vorhanden)
@@ -278,12 +278,12 @@ function Invoke-sqmTableTransfer
 
 					if ($existing)
 					{
-						_AddResult $t 'ScriptMetadata' 'Skipped' "Tabelle existiert bereits auf '$Destination'.'$DestinationDatabase' - wird nicht neu angelegt."
-						Write-sqmTransferLog -Message "Tabelle '$t' existiert bereits auf Ziel - Metadaten-Erstellung uebersprungen." -FunctionName $functionName -Level 'INFO'
+						_AddResult $t 'ScriptMetadata' 'Skipped' (Get-sqmTransferString -Key 'InvokeTransfer.TableExistsSkipped' -FormatArgs @($Destination, $DestinationDatabase))
+						Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.TableExistsSkippedLog' -FormatArgs @($t)) -FunctionName $functionName -Level 'INFO'
 					}
 					else
 					{
-						$createAction = "Tabelle '$t' auf '$Destination'.'$DestinationDatabase' aus Quellmetadaten anlegen"
+						$createAction = Get-sqmTransferString -Key 'InvokeTransfer.CreateAction' -FormatArgs @($t, $Destination, $DestinationDatabase)
 						if ($PSCmdlet.ShouldProcess($Destination, $createAction))
 						{
 							$schemaResults = Copy-sqmTableSchema -Source $Source -SourceDatabase $SourceDatabase `
@@ -296,7 +296,7 @@ function Invoke-sqmTableTransfer
 							if ($notFoundResult)
 							{
 								_AddResult $t 'ScriptMetadata' 'NotFound' $notFoundResult.Message
-								if (-not $ContinueOnError -and $EnableException) { throw "Tabelle '$t' nicht auf Quelle '$Source'.'$SourceDatabase' gefunden." }
+								if (-not $ContinueOnError -and $EnableException) { throw (Get-sqmTransferString -Key 'InvokeTransfer.TableNotFoundOnSource' -FormatArgs @($t, $Source, $SourceDatabase)) }
 								# Ohne Quelltabelle sind Disable/Copy/Compare fuer diese Tabelle sinnlos - naechste Tabelle.
 								continue
 							}
@@ -304,23 +304,23 @@ function Invoke-sqmTableTransfer
 							$schemaFailCount = @($schemaResults | Where-Object Status -eq 'Failed').Count
 							if ($schemaFailCount -gt 0)
 							{
-								_AddResult $t 'ScriptMetadata' 'Failed' "$schemaFailCount von $($schemaResults.Count) Batch(es) fehlgeschlagen."
-								if (-not $ContinueOnError -and $EnableException) { throw "Metadaten-Erstellung fuer '$t' fehlgeschlagen." }
+								_AddResult $t 'ScriptMetadata' 'Failed' (Get-sqmTransferString -Key 'InvokeTransfer.BatchesFailed' -FormatArgs @($schemaFailCount, $schemaResults.Count))
+								if (-not $ContinueOnError -and $EnableException) { throw (Get-sqmTransferString -Key 'InvokeTransfer.MetadataCreationFailed' -FormatArgs @($t)) }
 							}
 							else
 							{
-								_AddResult $t 'ScriptMetadata' 'Success' "Tabelle '$t' auf Ziel angelegt ($($schemaResults.Count) Batch(es))."
+								_AddResult $t 'ScriptMetadata' 'Success' (Get-sqmTransferString -Key 'InvokeTransfer.TableCreated' -FormatArgs @($t, $schemaResults.Count))
 							}
 						}
 						else
 						{
-							_AddResult $t 'ScriptMetadata' 'WhatIf' "WhatIf: $createAction"
+							_AddResult $t 'ScriptMetadata' 'WhatIf' (Get-sqmTransferString -Key 'Common.WhatIf' -FormatArgs @($createAction))
 						}
 					}
 				}
 				catch
 				{
-					$msg = "Fehler bei der Metadaten-Erstellung fuer '$t': $($_.Exception.Message)"
+					$msg = Get-sqmTransferString -Key 'InvokeTransfer.MetadataCreationError' -FormatArgs @($t, $_.Exception.Message)
 					_AddResult $t 'ScriptMetadata' 'Failed' $msg
 					Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
 					if ($EnableException -and -not $ContinueOnError) { throw }
@@ -336,7 +336,7 @@ function Invoke-sqmTableTransfer
 			{
 				if (-not $SkipConstraintHandling)
 				{
-					$disableAction = "FKs/Indizes auf '$Destination'.'$DestinationDatabase'.[$t] deaktivieren"
+					$disableAction = Get-sqmTransferString -Key 'InvokeTransfer.DisableAction' -FormatArgs @($Destination, $DestinationDatabase, $t)
 					if ($PSCmdlet.ShouldProcess($Destination, $disableAction))
 					{
 						$disableResults = Disable-sqmTableConstraints -SqlInstance $Destination -Database $DestinationDatabase `
@@ -346,16 +346,16 @@ function Invoke-sqmTableTransfer
 						$constraintsWereDisabled = $true
 						$disableFailCount = @($disableResults | Where-Object Status -like 'Failed*').Count
 						$status = if ($disableFailCount -gt 0) { 'Warning' } else { 'Success' }
-						_AddResult $t 'DisableConstraints' $status "$($disableResults.Count) Objekt(e) verarbeitet, $disableFailCount Fehler."
+						_AddResult $t 'DisableConstraints' $status (Get-sqmTransferString -Key 'InvokeTransfer.ObjectsProcessed' -FormatArgs @($disableResults.Count, $disableFailCount))
 					}
 					else
 					{
-						_AddResult $t 'DisableConstraints' 'WhatIf' "WhatIf: $disableAction"
+						_AddResult $t 'DisableConstraints' 'WhatIf' (Get-sqmTransferString -Key 'Common.WhatIf' -FormatArgs @($disableAction))
 					}
 				}
 				else
 				{
-					_AddResult $t 'DisableConstraints' 'Skipped' 'SkipConstraintHandling gesetzt.'
+					_AddResult $t 'DisableConstraints' 'Skipped' (Get-sqmTransferString -Key 'InvokeTransfer.SkipConstraintHandlingSet')
 				}
 
 				# --- Daten kopieren ---
@@ -369,8 +369,8 @@ function Invoke-sqmTableTransfer
 				$copyResult = $copyResults | Select-Object -First 1
 				if ($copyResult)
 				{
-					_AddResult $t 'CopyData' $copyResult.Status "$($copyResult.RowsCopied) Zeile(n) in $($copyResult.ElapsedSeconds)s. $($copyResult.Message)"
-					if ($copyResult.Status -eq 'Failed' -and $EnableException -and -not $ContinueOnError) { throw "Datenkopie fuer '$t' fehlgeschlagen: $($copyResult.Message)" }
+					_AddResult $t 'CopyData' $copyResult.Status (Get-sqmTransferString -Key 'InvokeTransfer.RowsCopiedIn' -FormatArgs @($copyResult.RowsCopied, $copyResult.ElapsedSeconds, $copyResult.Message))
+					if ($copyResult.Status -eq 'Failed' -and $EnableException -and -not $ContinueOnError) { throw (Get-sqmTransferString -Key 'InvokeTransfer.DataCopyFailed' -FormatArgs @($t, $copyResult.Message)) }
 				}
 
 				# --- Zeilen vergleichen (nur sinnvoll wenn tatsaechlich kopiert wurde) ---
@@ -384,18 +384,18 @@ function Invoke-sqmTableTransfer
 					if ($compareResult)
 					{
 						$cmpStatus = if ($compareResult.Message) { 'Failed' } elseif ($compareResult.Match) { 'Success' } else { 'Mismatch' }
-						_AddResult $t 'CompareRowCount' $cmpStatus "Quelle=$($compareResult.SourceRows) Ziel=$($compareResult.DestinationRows) Differenz=$($compareResult.Difference)"
+						_AddResult $t 'CompareRowCount' $cmpStatus (Get-sqmTransferString -Key 'InvokeTransfer.CompareResult' -FormatArgs @($compareResult.SourceRows, $compareResult.DestinationRows, $compareResult.Difference))
 						$rowCountResults.Add($compareResult)
 					}
 				}
 				else
 				{
-					_AddResult $t 'CompareRowCount' 'Skipped' 'Datenkopie nicht erfolgreich - Vergleich uebersprungen.'
+					_AddResult $t 'CompareRowCount' 'Skipped' (Get-sqmTransferString -Key 'InvokeTransfer.CompareSkipped')
 				}
 			}
 			catch
 			{
-				$msg = "Fehler bei der Verarbeitung von '$t': $($_.Exception.Message)"
+				$msg = Get-sqmTransferString -Key 'InvokeTransfer.ProcessingError' -FormatArgs @($t, $_.Exception.Message)
 				_AddResult $t 'Transfer' 'Failed' $msg
 				Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
 				if ($EnableException -and -not $ContinueOnError) { throw }
@@ -411,12 +411,12 @@ function Invoke-sqmTableTransfer
 																	 -Confirm:$false
 						$enableFailCount = @($enableResults | Where-Object Status -like 'Failed*').Count
 						$status = if ($enableFailCount -gt 0) { 'Warning' } else { 'Success' }
-						_AddResult $t 'EnableConstraints' $status "$($enableResults.Count) Objekt(e) verarbeitet, $enableFailCount Fehler."
+						_AddResult $t 'EnableConstraints' $status (Get-sqmTransferString -Key 'InvokeTransfer.ObjectsProcessed' -FormatArgs @($enableResults.Count, $enableFailCount))
 					}
 					catch
 					{
 						# Nicht weiterwerfen - eine urspruengliche Ausnahme aus dem Transfer darf nicht verdeckt werden.
-						$msg = "KRITISCH: Re-Enable von FKs/Indizes fuer '$t' fehlgeschlagen: $($_.Exception.Message)"
+						$msg = Get-sqmTransferString -Key 'InvokeTransfer.ReenableCritical' -FormatArgs @($t, $_.Exception.Message)
 						Write-Warning $msg
 						Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
 						_AddResult $t 'EnableConstraints' 'Failed' $msg
@@ -432,7 +432,7 @@ function Invoke-sqmTableTransfer
 		$failCount = @($results | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound')).Count
 		$warnCount = @($results | Where-Object Status -in @('Warning', 'Skipped', 'WhatIf')).Count
 
-		$summaryMsg = "Invoke-sqmTableTransfer abgeschlossen - Erfolg: $successCount | Fehler/Mismatch/NotFound: $failCount | Warnungen/Uebersprungen: $warnCount"
+		$summaryMsg = Get-sqmTransferString -Key 'InvokeTransfer.Summary' -FormatArgs @($successCount, $failCount, $warnCount)
 		Write-sqmTransferLog -Message $summaryMsg -FunctionName $functionName -Level 'INFO'
 		Write-Host $summaryMsg -ForegroundColor $(if ($failCount -gt 0) { 'Yellow' } else { 'Green' })
 
@@ -451,8 +451,8 @@ function Invoke-sqmTableTransfer
 		}
 		catch
 		{
-			Write-Warning "HTML-Bericht konnte nicht erzeugt werden: $($_.Exception.Message)"
-			Write-sqmTransferLog -Message "HTML-Bericht konnte nicht erzeugt werden: $($_.Exception.Message)" -FunctionName $functionName -Level 'ERROR'
+			Write-Warning (Get-sqmTransferString -Key 'InvokeTransfer.ReportFailed' -FormatArgs @($_.Exception.Message))
+			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.ReportFailed' -FormatArgs @($_.Exception.Message)) -FunctionName $functionName -Level 'ERROR'
 		}
 
 		return $results
