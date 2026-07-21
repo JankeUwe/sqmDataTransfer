@@ -44,6 +44,10 @@ $script:sqmtStrings = @{
 		'Compare.LogMessage'  = 'Zeilenvergleich [{0}] -> [{1}]: Quelle={2} Ziel={3} Match={4}{5}'
 		'Compare.ErrorSuffix' = ' Fehler: {0}'
 
+		'CompareDb.Start'     = "Vergleiche Zeilenzahlen aller Tabellen: '{0}'.'{1}' -> '{2}'.'{3}' (Metadaten, kein Datenscan)."
+		'CompareDb.Summary'   = '{0} Tabelle(n) verglichen: {1} identisch, {2} abweichend, {3} nur auf Quelle, {4} nur auf Ziel.'
+		'CompareDb.Verifying' = '{0} abweichende Tabelle(n) werden mit exaktem COUNT_BIG(*) nachgeprueft.'
+
 		'Copy.Action'           = "Daten von '{0}'.'{1}'.[{2}] nach '{3}'.'{4}'.[{5}] kopieren"
 		'Copy.RowsCopied'       = '{0} Zeile(n) kopiert: [{1}] -> [{2}] ({3}s).'
 		'Copy.Failed'           = 'Datenkopie fehlgeschlagen fuer [{0}]: {1}'
@@ -193,6 +197,10 @@ $script:sqmtStrings = @{
 		'Compare.DestError'   = 'Target: {0}'
 		'Compare.LogMessage'  = 'Row comparison [{0}] -> [{1}]: Source={2} Target={3} Match={4}{5}'
 		'Compare.ErrorSuffix' = ' Error: {0}'
+
+		'CompareDb.Start'     = "Comparing row counts for all tables: '{0}'.'{1}' -> '{2}'.'{3}' (metadata, no data scan)."
+		'CompareDb.Summary'   = '{0} table(s) compared: {1} matching, {2} mismatched, {3} source-only, {4} destination-only.'
+		'CompareDb.Verifying' = '{0} mismatched table(s) being re-checked with an exact COUNT_BIG(*).'
 
 		'Copy.Action'           = "Copying data from '{0}'.'{1}'.[{2}] to '{3}'.'{4}'.[{5}]"
 		'Copy.RowsCopied'       = '{0} row(s) copied: [{1}] -> [{2}] ({3}s).'

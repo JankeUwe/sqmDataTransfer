@@ -92,6 +92,25 @@ Requires a primary key on the table (composite PKs are supported) and identical 
 sides - it doesn't create or alter tables. Because step 1 is a full scan on both sides, only point
 it at the tables that are actually expected to have changed, not an entire large table set.
 
+### Checking every table at once after an interrupted run
+
+`Compare-sqmTableRowCount` needs an explicit `-Table` list - after an interrupted run over a large
+table set, figuring out that list is the hard part. `Compare-sqmDatabaseRowCount` auto-discovers
+every table on both sides and reports each as `Match`, `Mismatch`, `MissingOnSource` or
+`MissingOnDestination` - no table list required:
+
+```powershell
+Compare-sqmDatabaseRowCount -Source SQL01 -SourceDatabase Sales -Destination SQL02 -DestinationDatabase Sales |
+    Where-Object Status -ne 'Match'
+```
+
+The counts come from SQL Server's own partition metadata (`sys.partitions`, summed per table) -
+one cheap, set-based query per side, not a per-table `SELECT COUNT_BIG(*)`. Safe to run against a
+database with a billion rows without touching the buffer pool. Add `-VerifyMismatches` to re-check
+only the tables that came back `Mismatch` with an exact `SELECT COUNT_BIG(*)` (via
+`Compare-sqmTableRowCount`) - metadata counts can be briefly stale under heavy concurrent writes,
+and this is the one step that actually touches data, scoped to just the tables that looked wrong.
+
 ## Functions
 
 | Function | Purpose |
@@ -104,6 +123,7 @@ it at the tables that are actually expected to have changed, not an entire large
 | `Enable-sqmTableConstraints` | Re-enables (rebuilds) previously disabled FKs / indexes. |
 | `Copy-sqmTableData` | Bulk-copies table data (wraps `Copy-DbaDbTableData`). |
 | `Compare-sqmTableRowCount` | Compares row counts source vs. target. |
+| `Compare-sqmDatabaseRowCount` | Compares row counts for every table between two databases, no table list required. |
 | `Sync-sqmTableData` | Hash-diffs source vs. target and applies only insert/update/delete. |
 | `Export-sqmTransferReport` | Builds the HTML summary/row-count report. |
 | `Show-sqmTableTransferGui` | WinForms GUI for the whole workflow. |
