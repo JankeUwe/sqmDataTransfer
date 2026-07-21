@@ -35,7 +35,11 @@ For a chosen set of tables, `Invoke-sqmTableTransfer` runs:
    if an earlier step fails.
 
 Every step is logged to `%LogPath%\sqmDataTransfer_yyyyMMdd_<FunctionName>.log` and returned as a
-structured result object (`Table`, `Step`, `Status`, `Message`, `Timestamp`).
+structured result object (`Table`, `Step`, `Status`, `Message`, `Timestamp`). Watching a run live in
+the console also shows two `Write-Progress` bars: overall table progress ("Table 55 of 300: ...")
+and, while a table is actually copying, rows copied so far for that table - updated every
+`-NotifyAfter` rows (default: `-BatchSize`). Silence both with the standard
+`-ProgressAction SilentlyContinue` common parameter.
 
 A self-contained HTML report is **always** written at the end of the run (same convention as
 sqmSQLTool's report-generating functions) - every processed table plus any that are missing/failed,

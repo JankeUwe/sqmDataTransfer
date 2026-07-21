@@ -47,6 +47,11 @@
 .PARAMETER BulkCopyTimeOut
     Bulk copy timeout in seconds. Default: 300.
 
+.PARAMETER NotifyAfter
+    Rows per progress update (Write-Progress) while a table is copying - useful when watching a
+    long transfer live in the console. Default: same as -BatchSize. Progress can be silenced with
+    the standard -ProgressAction SilentlyContinue common parameter.
+
 .PARAMETER ContinueOnError
     Continue with the next table on error.
 
@@ -94,6 +99,8 @@ function Copy-sqmTableData
 		[Parameter(Mandatory = $false)]
 		[int]$BulkCopyTimeOut = 300,
 		[Parameter(Mandatory = $false)]
+		[int]$NotifyAfter,
+		[Parameter(Mandatory = $false)]
 		[switch]$ContinueOnError,
 		[Parameter(Mandatory = $false)]
 		[switch]$EnableException
@@ -111,8 +118,10 @@ function Copy-sqmTableData
 		$BatchSize = Get-sqmTransferConfig -Key 'DefaultBatchSize'
 		if (-not $BatchSize) { $BatchSize = 50000 }
 	}
+	if (-not $PSBoundParameters.ContainsKey('NotifyAfter')) { $NotifyAfter = $BatchSize }
 
 	$results = [System.Collections.Generic.List[PSCustomObject]]::new()
+	$rowsCopiedPattern = 'adjusted total rows copied = (\d+)'
 
 	foreach ($t in $Table)
 	{
@@ -139,16 +148,38 @@ function Copy-sqmTableData
 				DestinationTable    = $targetTableName
 				BatchSize		    = $BatchSize
 				BulkCopyTimeOut	    = $BulkCopyTimeOut
+				NotifyAfter		    = $NotifyAfter
 				KeepIdentity	    = $KeepIdentity
 				KeepNulls		    = $KeepNulls
 				Truncate		    = $Truncate.IsPresent
 				EnableException	    = $true
 				Confirm			    = $false
+				Verbose			    = $true
 			}
 			if ($SourceCredential) { $copyParams['SqlCredential'] = $SourceCredential }
 			if ($DestinationCredential) { $copyParams['DestinationSqlCredential'] = $DestinationCredential }
 
-			$copyResult = Copy-DbaDbTableData @copyParams
+			# Verbose-Stream statt roher Textausgabe in eine Fortschrittsanzeige uebersetzen - dbatools
+			# meldet den kumulierten Zeilenstand alle -NotifyAfter Zeilen ueber genau diesen Kanal.
+			$progressActivity = Get-sqmTransferString -Key 'Copy.ProgressActivity' -FormatArgs @($t)
+			$copyResult = $null
+			try
+			{
+				Copy-DbaDbTableData @copyParams 4>&1 | ForEach-Object {
+					if ($_ -is [System.Management.Automation.VerboseRecord])
+					{
+						if ($_.Message -match $rowsCopiedPattern)
+						{
+							Write-Progress -Id 2 -Activity $progressActivity -Status (Get-sqmTransferString -Key 'Copy.ProgressStatus' -FormatArgs @([int64]$Matches[1]))
+						}
+					}
+					else { $copyResult = $_ }
+				}
+			}
+			finally
+			{
+				Write-Progress -Id 2 -Activity $progressActivity -Completed
+			}
 			$rows = if ($copyResult -and $copyResult.RowsCopied) { [int64]$copyResult.RowsCopied } else { 0 }
 
 			$sw.Stop()

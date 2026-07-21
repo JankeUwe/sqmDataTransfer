@@ -261,8 +261,15 @@ function Invoke-sqmTableTransfer
 
 	process
 	{
+		$tableIndex = 0
+		$tableTotal = @($Table).Count
 		foreach ($t in $Table)
 		{
+			$tableIndex++
+			Write-Progress -Id 1 -Activity (Get-sqmTransferString -Key 'InvokeTransfer.ProgressActivity') `
+							-Status (Get-sqmTransferString -Key 'InvokeTransfer.ProgressStatus' -FormatArgs @($tableIndex, $tableTotal, $t)) `
+							-PercentComplete ([math]::Floor((($tableIndex - 1) / [math]::Max($tableTotal, 1)) * 100))
+
 			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.ProcessingTable' -FormatArgs @($t)) -FunctionName $functionName -Level 'INFO'
 
 			# ------------------------------------------------------------------
@@ -428,6 +435,8 @@ function Invoke-sqmTableTransfer
 
 	end
 	{
+		Write-Progress -Id 1 -Activity (Get-sqmTransferString -Key 'InvokeTransfer.ProgressActivity') -Completed
+
 		$successCount = @($results | Where-Object Status -eq 'Success').Count
 		$failCount = @($results | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound')).Count
 		$warnCount = @($results | Where-Object Status -in @('Warning', 'Skipped', 'WhatIf')).Count

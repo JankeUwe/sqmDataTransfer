@@ -44,9 +44,11 @@ $script:sqmtStrings = @{
 		'Compare.LogMessage'  = 'Zeilenvergleich [{0}] -> [{1}]: Quelle={2} Ziel={3} Match={4}{5}'
 		'Compare.ErrorSuffix' = ' Fehler: {0}'
 
-		'Copy.Action'      = "Daten von '{0}'.'{1}'.[{2}] nach '{3}'.'{4}'.[{5}] kopieren"
-		'Copy.RowsCopied'  = '{0} Zeile(n) kopiert: [{1}] -> [{2}] ({3}s).'
-		'Copy.Failed'      = 'Datenkopie fehlgeschlagen fuer [{0}]: {1}'
+		'Copy.Action'           = "Daten von '{0}'.'{1}'.[{2}] nach '{3}'.'{4}'.[{5}] kopieren"
+		'Copy.RowsCopied'       = '{0} Zeile(n) kopiert: [{1}] -> [{2}] ({3}s).'
+		'Copy.Failed'           = 'Datenkopie fehlgeschlagen fuer [{0}]: {1}'
+		'Copy.ProgressActivity' = 'Kopiere [{0}]'
+		'Copy.ProgressStatus'   = '{0:N0} Zeile(n) kopiert...'
 
 		'CopySchema.TargetVersionDetected' = "Ziel '{0}' erkannt als SQL Server {1}.{2} -> TargetServerVersion {3}."
 		'CopySchema.TargetVersionFailed'   = "Zielversion von '{0}' konnte nicht ermittelt werden - scripte ohne TargetServerVersion (Quellsyntax): {1}"
@@ -96,6 +98,8 @@ $script:sqmtStrings = @{
 		'ExportReport.WriteFailedLog'    = "Fehler beim Schreiben des HTML-Berichts nach '{0}': {1}"
 
 		'InvokeTransfer.Start'                        = "Start Invoke-sqmTableTransfer: '{0}'.'{1}' -> '{2}'.'{3}' | Tabellen: {4}"
+		'InvokeTransfer.ProgressActivity'             = 'Tabellen werden uebertragen'
+		'InvokeTransfer.ProgressStatus'               = 'Tabelle {0} von {1}: {2}'
 		'InvokeTransfer.SkipCompletedChecking'        = 'SkipCompleted aktiv - pruefe {0} Tabelle(n) auf bereits abgeschlossenen Transfer.'
 		'InvokeTransfer.SkipCompletedResultMsg'       = 'Quelle und Ziel haben bereits identische Zeilenzahl ({0}) - Transfer uebersprungen.'
 		'InvokeTransfer.SkipCompletedSummary'         = 'SkipCompleted: {0} von {1} Tabelle(n) bereits vollstaendig - werden uebersprungen. Verbleibend: {2}.'
@@ -190,9 +194,11 @@ $script:sqmtStrings = @{
 		'Compare.LogMessage'  = 'Row comparison [{0}] -> [{1}]: Source={2} Target={3} Match={4}{5}'
 		'Compare.ErrorSuffix' = ' Error: {0}'
 
-		'Copy.Action'      = "Copying data from '{0}'.'{1}'.[{2}] to '{3}'.'{4}'.[{5}]"
-		'Copy.RowsCopied'  = '{0} row(s) copied: [{1}] -> [{2}] ({3}s).'
-		'Copy.Failed'      = 'Data copy failed for [{0}]: {1}'
+		'Copy.Action'           = "Copying data from '{0}'.'{1}'.[{2}] to '{3}'.'{4}'.[{5}]"
+		'Copy.RowsCopied'       = '{0} row(s) copied: [{1}] -> [{2}] ({3}s).'
+		'Copy.Failed'           = 'Data copy failed for [{0}]: {1}'
+		'Copy.ProgressActivity' = 'Copying [{0}]'
+		'Copy.ProgressStatus'   = '{0:N0} row(s) copied...'
 
 		'CopySchema.TargetVersionDetected' = "Target '{0}' detected as SQL Server {1}.{2} -> TargetServerVersion {3}."
 		'CopySchema.TargetVersionFailed'   = "Could not determine target version of '{0}' - scripting without TargetServerVersion (source syntax): {1}"
@@ -242,6 +248,8 @@ $script:sqmtStrings = @{
 		'ExportReport.WriteFailedLog'    = "Error writing HTML report to '{0}': {1}"
 
 		'InvokeTransfer.Start'                        = "Start Invoke-sqmTableTransfer: '{0}'.'{1}' -> '{2}'.'{3}' | Tables: {4}"
+		'InvokeTransfer.ProgressActivity'             = 'Transferring tables'
+		'InvokeTransfer.ProgressStatus'               = 'Table {0} of {1}: {2}'
 		'InvokeTransfer.SkipCompletedChecking'        = 'SkipCompleted active - checking {0} table(s) for an already-completed transfer.'
 		'InvokeTransfer.SkipCompletedResultMsg'       = 'Source and target already have identical row counts ({0}) - transfer skipped.'
 		'InvokeTransfer.SkipCompletedSummary'         = 'SkipCompleted: {0} of {1} table(s) already complete - being skipped. Remaining: {2}.'
