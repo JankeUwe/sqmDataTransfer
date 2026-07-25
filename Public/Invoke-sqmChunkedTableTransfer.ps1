@@ -245,13 +245,14 @@ function Invoke-sqmChunkedTableTransfer
 		throw "Konnte keine Spalten fuer $qualified auf '$Source'.'$SourceDatabase' ermitteln - Tabelle existiert nicht oder ist nicht lesbar."
 	}
 
-	$dstColumnNames = @()
-	try
-	{
-		$dstColQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND is_computed = 0 ORDER BY column_id"
-		$dstColumnNames = @(Invoke-DbaQuery @dstConnParams -Query $dstColQuery -As PSObject -EnableException | Select-Object -ExpandProperty name)
-	}
-	catch { $dstColumnNames = @() }
+	# OBJECT_ID() on a table that genuinely doesn't exist yet returns NULL and this query simply
+	# comes back empty - no exception needed for that case. An exception here means the query
+	# itself failed (permissions, connectivity, wrong database context, ...), which must NOT be
+	# treated the same as "table doesn't exist" - silently falling back to source-column-order in
+	# that case would reproduce the exact column-order-mismatch bug this function exists to avoid,
+	# with no trace of why. Let it fail loudly instead.
+	$dstColQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND is_computed = 0 ORDER BY column_id"
+	$dstColumnNames = @(Invoke-DbaQuery @dstConnParams -Query $dstColQuery -As PSObject -EnableException | Select-Object -ExpandProperty name)
 
 	if ($dstColumnNames.Count -gt 0)
 	{
