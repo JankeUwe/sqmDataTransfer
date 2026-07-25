@@ -172,7 +172,21 @@ function Copy-sqmTableData
 			}
 			if ($SourceCredential) { $copyParams['SqlCredential'] = $SourceCredential }
 			if ($DestinationCredential) { $copyParams['DestinationSqlCredential'] = $DestinationCredential }
-			if ($SourceQuery) { $copyParams['Query'] = $SourceQuery }
+			if ($SourceQuery)
+			{
+				$copyParams['Query'] = $SourceQuery
+				# Copy-DbaDbTableData only builds real NAME-based SqlBulkCopy.ColumnMappings for a
+				# plain -Table copy; with -Query it leaves ColumnMappings empty by default and lets
+				# SqlBulkCopy fall back to its own implicit ORDINAL mapping against the destination's
+				# full physical column list (computed columns included in that count, even though
+				# they can never be written to) - a computed column anywhere before the end of the
+				# table silently shifts every later column by one position. -ForceExplicitMapping
+				# makes dbatools build the same real NAME-based mapping it already uses for -Table,
+				# immune to column order/computed-column position entirely. Verified against a real
+				# 108-column production table (FXUeberleitung.Ergebnis_agg) with a computed column at
+				# position 3 - reproduced the ordinal shift without this, gone with it.
+				$copyParams['ForceExplicitMapping'] = $true
+			}
 
 			# Verbose-Stream statt roher Textausgabe in eine Fortschrittsanzeige uebersetzen - dbatools
 			# meldet den kumulierten Zeilenstand alle -NotifyAfter Zeilen ueber genau diesen Kanal.

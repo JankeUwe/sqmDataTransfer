@@ -21,10 +21,11 @@
            match is skipped - this is what makes a re-run after a partial failure resume from
            where it left off, without needing a row-level key.
         4. Any slice that doesn't match gets a normal Invoke-sqmTableTransfer call scoped to just
-           that value via -SourceQuery (SELECT <non-computed columns> ... WHERE [ChunkColumn] =
-           value - computed columns are excluded since -SourceQuery maps columns by ordinal
-           position and SqlBulkCopy cannot write an explicit value into a computed column), with
-           per-chunk reports suppressed (-NoReport) so a large chunk count doesn't produce a
+           that value via -SourceQuery (SELECT * ... WHERE [ChunkColumn] = value) - safe
+           regardless of column order or computed columns on either side, since Copy-sqmTableData
+           passes -ForceExplicitMapping through whenever -SourceQuery is used, making dbatools
+           build a real NAME-based column mapping instead of its otherwise-implicit ordinal one -
+           with per-chunk reports suppressed (-NoReport) so a large chunk count doesn't produce a
            report pile-up - see Export-sqmTransferReport for the single consolidated report
            written at the end.
 
@@ -222,22 +223,23 @@ function Invoke-sqmChunkedTableTransfer
 	Write-sqmTransferLog -Message "Invoke-sqmChunkedTableTransfer: '$Source'.'$SourceDatabase'.$qualified -> '$Destination'.'$DestinationDatabase' per '$ChunkColumn'" `
 						  -FunctionName $functionName -Level 'INFO'
 
-	# -SourceQuery maps columns by ORDINAL POSITION, not by name (see Copy-DbaDbTableData -Query).
-	# Two separate reasons a plain SELECT * breaks this:
-	#   1. Computed columns - SqlBulkCopy cannot write an explicit value into one, so any computed
-	#      column has to be excluded from the list entirely.
-	#   2. Column ORDER drift between source and destination - for a cross-instance transfer onto
-	#      an already-existing destination table (not freshly created by -ScriptMetadata here),
-	#      the destination's column order can legitimately differ from the source's (different
-	#      deployment history). SELECT * follows the SOURCE's order; if that doesn't match the
-	#      DESTINATION's order, SqlBulkCopy silently writes column N's data into whatever column
-	#      happens to sit at position N on the destination - wrong data in the wrong column, or
-	#      (if types/collations differ enough) an outright error like "locale id X of source
-	#      column A and locale id Y of destination column B do not match" - a real symptom hit
-	#      against FXUeberleitung. The fix: base the SELECT list on the DESTINATION's column order
-	#      when the destination table already exists, not the source's - only fall back to the
-	#      source's order when the destination doesn't exist yet (in which case -ScriptMetadata
-	#      creates it fresh from the source, so the two orders are identical anyway).
+	# A plain "SELECT * FROM source" is fine here regardless of column order, computed columns, or
+	# a genuine schema mismatch between source and destination - Copy-sqmTableData passes
+	# -ForceExplicitMapping through to Copy-DbaDbTableData whenever -SourceQuery is used, which
+	# makes dbatools build a real NAME-based SqlBulkCopy.ColumnMappings (matching what it already
+	# does for a plain -Table copy) instead of leaving the mapping empty and falling back to
+	# SqlBulkCopy's own implicit ORDINAL mapping against the destination's full physical column
+	# list. That implicit fallback is what caused real breakage here: a computed column ANYWHERE
+	# before the end of the table (not just excluded from the SELECT list, simply existing earlier
+	# in physical column order) silently shifts every later column's mapping by one position -
+	# reproduced against a real 108-column production table (FXUeberleitung.Ergebnis_agg, computed
+	# column at physical position 3) where two unrelated columns 12 positions later ended up
+	# mapped to each other. Column-count/order reconstruction on our side was the wrong fix for
+	# that; -ForceExplicitMapping is dbatools' own correct one.
+	#
+	# Only remaining concern with plain SELECT * is columns that exist on just one side - dbatools
+	# handles this safely either way (a destination-only column is left at its default/NULL, a
+	# source-only column is silently not copied), but silent is exactly the risk worth flagging.
 	$srcColQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND is_computed = 0 ORDER BY column_id"
 	$srcColumnNames = @(Invoke-DbaQuery @srcConnParams -Query $srcColQuery -As PSObject -EnableException | Select-Object -ExpandProperty name)
 	if ($srcColumnNames.Count -eq 0)
@@ -247,69 +249,20 @@ function Invoke-sqmChunkedTableTransfer
 
 	# OBJECT_ID() on a table that genuinely doesn't exist yet returns NULL and this query simply
 	# comes back empty - no exception needed for that case. An exception here means the query
-	# itself failed (permissions, connectivity, wrong database context, ...), which must NOT be
-	# treated the same as "table doesn't exist" - silently falling back to source-column-order in
-	# that case would reproduce the exact column-order-mismatch bug this function exists to avoid,
-	# with no trace of why. Let it fail loudly instead.
-	# Full type info (not just name) is needed for missing-on-source columns below - a bare NULL
-	# placeholder doesn't carry the destination column's collation, which SqlBulkCopy checks even
-	# for a NULL literal ("locale id 0 of source column X and locale id 1033 of destination column
-	# X do not match" - same column name on both sides, still fails without an explicit CAST).
-	$dstColQuery = @"
-SELECT c.name, ty.name AS TypeName, c.max_length, c.precision, c.scale, c.collation_name
-FROM sys.columns c
-JOIN sys.types ty ON ty.user_type_id = c.user_type_id
-WHERE c.object_id = OBJECT_ID(N'$bracketed') AND c.is_computed = 0
-ORDER BY c.column_id
-"@
-	$dstColumnInfo = @(Invoke-DbaQuery @dstConnParams -Query $dstColQuery -As PSObject -EnableException)
-	$dstColumnNames = @($dstColumnInfo | Select-Object -ExpandProperty name)
-
-	# Builds a properly-typed NULL placeholder for a destination column that has no source
-	# counterpart, e.g. CAST(NULL AS varchar(20)) COLLATE Latin1_General_CI_AS - matches the
-	# destination's actual type/size/collation so SqlBulkCopy accepts it positionally.
-	function Format-NullPlaceholder($col)
-	{
-		$sizedTypes = @('varchar', 'nvarchar', 'char', 'nchar', 'varbinary', 'binary')
-		$precisionTypes = @('decimal', 'numeric')
-		if ($col.TypeName -in $sizedTypes)
-		{
-			$isUnicode = $col.TypeName.StartsWith('n')
-			$len = if ($col.max_length -eq -1) { 'MAX' } elseif ($isUnicode) { [int]($col.max_length / 2) } else { $col.max_length }
-			$collate = if ($col.collation_name) { " COLLATE $($col.collation_name)" } else { '' }
-			return "CAST(NULL AS $($col.TypeName)($len))$collate"
-		}
-		if ($col.TypeName -in $precisionTypes)
-		{
-			return "CAST(NULL AS $($col.TypeName)($($col.precision),$($col.scale)))"
-		}
-		return "CAST(NULL AS $($col.TypeName))"
-	}
+	# itself failed (permissions, connectivity, wrong database context, ...) and must be visible,
+	# not silently treated the same as "table doesn't exist".
+	$dstColQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND is_computed = 0 ORDER BY column_id"
+	$dstColumnNames = @(Invoke-DbaQuery @dstConnParams -Query $dstColQuery -As PSObject -EnableException | Select-Object -ExpandProperty name)
 
 	if ($dstColumnNames.Count -gt 0)
 	{
-		# Zieltabelle existiert bereits - deren Spaltenreihenfolge UND -ANZAHL ist massgeblich.
-		# -Query mappt rein ordinal gegen ALLE (nicht-berechneten) Zielspalten - dbatools kennt
-		# keine Namen, es zaehlt nur Position. Eine Zielspalte, die auf der Quelle fehlt, darf
-		# deshalb NICHT einfach aus der SELECT-Liste entfernt werden: das verschiebt jede
-		# nachfolgende Spalte um eine Position und erzeugt exakt die Art von "Spalte A landet in
-		# Spalte B"-Fehlzuordnung, die dieser ganze Namens-Abgleich eigentlich vermeiden soll (nur
-		# fuer eine Spalte GANZ AM ENDE waere Entfernen zufaellig folgenlos - deshalb ist ein
-		# frueherer Test mit genau diesem Fall irrefuehrend gewesen). Stattdessen wird an der
-		# fehlenden Position ein NULL-Platzhalter eingesetzt, analog zum von dbatools selbst
-		# dokumentierten Vorgehen fuer Identity-Spalten - Anzahl und Reihenfolge bleiben so exakt
-		# gleich der Zieltabelle, unabhaengig davon, welche Spalten auf der Quelle fehlen.
 		$srcSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$srcColumnNames, [System.StringComparer]::OrdinalIgnoreCase)
 		$dstSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$dstColumnNames, [System.StringComparer]::OrdinalIgnoreCase)
 		$missingOnSource = @($dstColumnNames | Where-Object { -not $srcSet.Contains($_) })
-		# Spalten, die nur auf der QUELLE existieren, wuerden sonst stillschweigend nie mitkopiert -
-		# im Unterschied zu $missingOnSource (s.u., durch NULL-Platzhalter abgedeckt) bedeutet das
-		# hier echten, unbemerkten Datenverlust, weil fuer sie in der Zieltabelle gar keine Spalte
-		# (und damit kein Platzhalter-Slot) existiert.
 		$missingOnDestination = @($srcColumnNames | Where-Object { -not $dstSet.Contains($_) })
 		if ($missingOnSource.Count -gt 0)
 		{
-			$msg = "Spalte(n) nur auf Ziel vorhanden, werden bei $qualified als NULL uebertragen (keine Quelldaten): $($missingOnSource -join ', ')"
+			$msg = "Spalte(n) nur auf Ziel vorhanden, bleiben bei $qualified auf Default/NULL (keine Quelldaten): $($missingOnSource -join ', ')"
 			Write-Warning $msg
 			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
 		}
@@ -319,22 +272,9 @@ ORDER BY c.column_id
 			Write-Warning $msg
 			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
 		}
-		$selectExpressions = @($dstColumnInfo | ForEach-Object {
-				if ($srcSet.Contains($_.name)) { "[$($_.name)]" } else { "$(Format-NullPlaceholder $_) AS [$($_.name)]" }
-			})
-	}
-	else
-	{
-		# Zieltabelle existiert noch nicht - wird gleich (per -ScriptMetadata im ersten Chunk) aus
-		# der Quelle erzeugt, Spaltenreihenfolge entspricht dann der Quelle 1:1.
-		$selectExpressions = @($srcColumnNames | ForEach-Object { "[$_]" })
 	}
 
-	if ($selectExpressions.Count -eq 0)
-	{
-		throw "Keine Spalten fuer $qualified ermittelt."
-	}
-	$columnList = $selectExpressions -join ', '
+	$columnList = '*'
 
 	$chunkQuery = "SELECT DISTINCT [$ChunkColumn] AS ChunkValue FROM $bracketed ORDER BY [$ChunkColumn]"
 	$chunkValues = @(Invoke-DbaQuery @srcConnParams -Query $chunkQuery -As PSObject -EnableException | Select-Object -ExpandProperty ChunkValue)
