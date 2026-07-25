@@ -23,11 +23,17 @@
         4. Any slice that doesn't match gets a normal Invoke-sqmTableTransfer call scoped to just
            that value via -SourceQuery (SELECT * ... WHERE [ChunkColumn] = value) - safe
            regardless of column order or computed columns on either side, since Copy-sqmTableData
-           passes -ForceExplicitMapping through whenever -SourceQuery is used, making dbatools
-           build a real NAME-based column mapping instead of its otherwise-implicit ordinal one -
-           with per-chunk reports suppressed (-NoReport) so a large chunk count doesn't produce a
-           report pile-up - see Export-sqmTransferReport for the single consolidated report
-           written at the end.
+           routes any -SourceQuery copy through Invoke-sqmDirectBulkCopy, which builds a real
+           NAME-based column mapping directly against SqlBulkCopy instead of relying on dbatools'
+           own -Query handling - with per-chunk reports suppressed (-NoReport) so a large chunk
+           count doesn't produce a report pile-up - see Export-sqmTransferReport for the single
+           consolidated report written at the end.
+        5. Foreign keys/indexes/triggers on the destination are disabled ONCE before the first
+           chunk and re-enabled (indexes: REBUILD) ONCE after the last one - not per chunk. A
+           rebuild is a whole-table operation regardless of how narrow the WHERE filter was, so
+           disabling and rebuilding per chunk multiplied the cost of that rebuild by the chunk
+           count for no benefit - on a table with hundreds of chunks this dwarfed the actual data
+           copy time. See -SkipConstraintHandling to opt out entirely.
 
 .PARAMETER Source
     Source SQL Server instance.
@@ -71,13 +77,16 @@
     already exist there (checked once, before the first chunk).
 
 .PARAMETER IncludeForeignKeys
-    Include foreign keys in the disable/enable handling around each chunk's copy. Default: $true.
+    Include foreign keys in the disable/enable handling around the whole chunked transfer
+    (once, not per chunk). Default: $true.
 
 .PARAMETER IncludeIndexes
-    Include indexes in the disable/enable handling around each chunk's copy. Default: $true.
+    Include indexes in the disable/enable handling around the whole chunked transfer
+    (once, not per chunk). Default: $true.
 
 .PARAMETER IncludeTriggers
-    Include triggers in the disable/enable handling around each chunk's copy. Default: $true.
+    Include triggers in the disable/enable handling around the whole chunked transfer
+    (once, not per chunk). Default: $true.
 
 .PARAMETER SkipConstraintHandling
     Skip disabling/re-enabling foreign keys, indexes and triggers entirely.
@@ -224,18 +233,18 @@ function Invoke-sqmChunkedTableTransfer
 						  -FunctionName $functionName -Level 'INFO'
 
 	# A plain "SELECT * FROM source" is fine here regardless of column order, computed columns, or
-	# a genuine schema mismatch between source and destination - Copy-sqmTableData passes
-	# -ForceExplicitMapping through to Copy-DbaDbTableData whenever -SourceQuery is used, which
-	# makes dbatools build a real NAME-based SqlBulkCopy.ColumnMappings (matching what it already
-	# does for a plain -Table copy) instead of leaving the mapping empty and falling back to
-	# SqlBulkCopy's own implicit ORDINAL mapping against the destination's full physical column
-	# list. That implicit fallback is what caused real breakage here: a computed column ANYWHERE
-	# before the end of the table (not just excluded from the SELECT list, simply existing earlier
-	# in physical column order) silently shifts every later column's mapping by one position -
-	# reproduced against a real 108-column production table (FXUeberleitung.Ergebnis_agg, computed
-	# column at physical position 3) where two unrelated columns 12 positions later ended up
-	# mapped to each other. Column-count/order reconstruction on our side was the wrong fix for
-	# that; -ForceExplicitMapping is dbatools' own correct one.
+	# a genuine schema mismatch between source and destination - Copy-sqmTableData routes any
+	# -SourceQuery copy through Invoke-sqmDirectBulkCopy, which builds a real NAME-based
+	# SqlBulkCopy.ColumnMappings directly (matching what dbatools itself already does for a plain
+	# -Table copy) instead of relying on SqlBulkCopy's own implicit ORDINAL mapping against the
+	# destination's full physical column list. That implicit fallback is what caused real breakage
+	# here: a computed column ANYWHERE before the end of the table (not just excluded from the
+	# SELECT list, simply existing earlier in physical column order) silently shifts every later
+	# column's mapping by one position - reproduced against a real 108-column production table
+	# (FXUeberleitung.Ergebnis_agg, computed column at physical position 3) where two unrelated
+	# columns 12 positions later ended up mapped to each other. Column-count/order reconstruction
+	# on our side was the wrong fix for that; explicit name-based mapping is the correct one - and
+	# doing it ourselves means no dependency on which dbatools version is installed.
 	#
 	# Only remaining concern with plain SELECT * is columns that exist on just one side - dbatools
 	# handles this safely either way (a destination-only column is left at its default/NULL, a
@@ -290,11 +299,38 @@ function Invoke-sqmChunkedTableTransfer
 			"Vermutlich die falsche Spalte fuer chunk-weisen Transfer (zu feingranular) - eine groebere Spalte waehlen oder -MaxChunkValues explizit erhoehen."
 	}
 
+	$allResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+	# --- Zieltabelle einmalig anlegen, falls sie noch nicht existiert - VOR Truncate/Disable,
+	# die beide eine bereits existierende Zieltabelle voraussetzen. Vorher lag das (idempotent,
+	# ueber Get-DbaDbTable) in jedem einzelnen Chunk-Aufruf - hier reicht einmal.
+	if ($ScriptMetadata)
+	{
+		$dstExistsForCreate = @(Get-DbaDbTable @dstConnParams -Table $tableName -Schema $schemaName -ErrorAction SilentlyContinue).Count -gt 0
+		if (-not $dstExistsForCreate)
+		{
+			$createAction = "Zieltabelle $qualified auf '$Destination'.'$DestinationDatabase' aus Quelle anlegen"
+			if ($PSCmdlet.ShouldProcess($Destination, $createAction))
+			{
+				$schemaResults = Copy-sqmTableSchema -Source $Source -SourceDatabase $SourceDatabase `
+													  -Destination $Destination -DestinationDatabase $DestinationDatabase `
+													  -Table $Table -SourceCredential $srcCred -DestinationCredential $dstCred `
+													  -IncludeForeignKeys $IncludeForeignKeys -IncludeIndexes $IncludeIndexes `
+													  -EnableException:$EnableException -Confirm:$false
+				$schemaFailCount = @($schemaResults | Where-Object Status -eq 'Failed').Count
+				$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = '(alle)'; Step = 'ScriptMetadata'; Status = $(if ($schemaFailCount -gt 0) { 'Failed' } else { 'Success' }); Message = "$($schemaResults.Count) Objekt(e), $schemaFailCount fehlgeschlagen."; Timestamp = (Get-Date) })
+				if ($schemaFailCount -gt 0 -and $EnableException)
+				{
+					throw "Anlegen von $qualified auf '$Destination'.'$DestinationDatabase' fehlgeschlagen."
+				}
+			}
+		}
+	}
+
 	if ($Truncate)
 	{
-		# Nur leeren, wenn die Zieltabelle schon existiert - bei einem allerersten Lauf legt erst
-		# der erste Chunk (ueber -ScriptMetadata) die Tabelle an; TRUNCATE auf eine nicht
-		# existierende Tabelle wuerde sonst fehlschlagen.
+		# Nur leeren, wenn die Zieltabelle existiert (siehe ScriptMetadata-Block oben) - TRUNCATE
+		# auf eine nicht existierende Tabelle wuerde sonst fehlschlagen.
 		$dstExists = @(Get-DbaDbTable @dstConnParams -Table $tableName -Schema $schemaName -ErrorAction SilentlyContinue).Count -gt 0
 		if ($dstExists)
 		{
@@ -307,99 +343,144 @@ function Invoke-sqmChunkedTableTransfer
 		}
 	}
 
-	$allResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+	# --- FKs/Indizes/Trigger EINMAL fuer den gesamten Chunk-Lauf deaktivieren statt pro Chunk -
+	# ein Index-REBUILD (Enable-sqmTableConstraints) ist unabhaengig vom WHERE-Filter immer eine
+	# Ganztabellen-Operation; ihn pro Chunk zu wiederholen hat seine Kosten mit der Chunk-Anzahl
+	# multipliziert, ohne jeden Nutzen - bei einer grossen Tabelle mit vielen Chunks dominierte
+	# das den gesamten Lauf gegenueber der eigentlichen Datenkopie.
+	$constraintsWereDisabled = $false
+	if (-not $SkipConstraintHandling)
+	{
+		$disableAction = "FKs/Indizes/Trigger auf '$Destination'.'$DestinationDatabase'.$qualified deaktivieren (einmalig fuer den gesamten Chunk-Lauf)"
+		if ($PSCmdlet.ShouldProcess($Destination, $disableAction))
+		{
+			$disableResults = Disable-sqmTableConstraints -SqlInstance $Destination -Database $DestinationDatabase `
+														   -Table $Table -SqlCredential $dstCred `
+														   -IncludeForeignKeys $IncludeForeignKeys -IncludeIndexes $IncludeIndexes `
+														   -IncludeTriggers $IncludeTriggers -Confirm:$false
+			$constraintsWereDisabled = $true
+			$disableFailCount = @($disableResults | Where-Object Status -like 'Failed*').Count
+			$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = '(alle)'; Step = 'DisableConstraints'; Status = $(if ($disableFailCount -gt 0) { 'Warning' } else { 'Success' }); Message = "$($disableResults.Count) Objekt(e), $disableFailCount fehlgeschlagen."; Timestamp = (Get-Date) })
+		}
+	}
+	else
+	{
+		$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = '(alle)'; Step = 'DisableConstraints'; Status = 'Skipped'; Message = '-SkipConstraintHandling gesetzt.'; Timestamp = (Get-Date) })
+	}
+
 	$chunkIndex = 0
 	$chunkTotal = $chunkValues.Count
 
-	foreach ($chunkValue in $chunkValues)
+	# --- Re-Enable/Rebuild ist per finally garantiert, auch wenn ein Chunk oder die Skip-Check-
+	# Abfrage darunter eine Exception wirft - genau das gleiche Muster wie in Invoke-sqmTableTransfer.
+	try
 	{
-		$chunkIndex++
-		$literal = Format-SqlLiteral $chunkValue
-		$chunkLabel = "$ChunkColumn = $literal"
-
-		Write-Progress -Id 3 -Activity "Chunked Transfer: $qualified" -Status "Chunk $chunkIndex von $chunkTotal ($chunkLabel)" `
-						-PercentComplete ([math]::Floor((($chunkIndex - 1) / $chunkTotal) * 100))
-
-		# --- Skip-Check: dieser Chunk allein, per COUNT_BIG(*) WHERE [ChunkColumn] = Wert -
-		# macht einen erneuten Lauf nach einem Abbruch resumable, ganz ohne Primary-/Unique-Key.
-		try
+		foreach ($chunkValue in $chunkValues)
 		{
-			$srcCount = [int64](Invoke-DbaQuery @srcConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
-			$dstCount = [int64](Invoke-DbaQuery @dstConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
-		}
-		catch
-		{
-			$srcCount = $null; $dstCount = $null
-		}
+			$chunkIndex++
+			$literal = Format-SqlLiteral $chunkValue
+			$chunkLabel = "$ChunkColumn = $literal"
 
-		if ($null -ne $srcCount -and $srcCount -eq $dstCount)
-		{
-			Write-sqmTransferLog -Message "Chunk $chunkLabel bereits vollstaendig ($srcCount Zeile(n)) - uebersprungen." -FunctionName $functionName -Level 'INFO'
-			$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = "$chunkValue"; Step = 'SkipCompletedChunk'; Status = 'Skipped'; Message = "$srcCount Zeile(n) bereits identisch."; Timestamp = (Get-Date) })
-			continue
-		}
+			Write-Progress -Id 3 -Activity "Chunked Transfer: $qualified" -Status "Chunk $chunkIndex von $chunkTotal ($chunkLabel)" `
+							-PercentComplete ([math]::Floor((($chunkIndex - 1) / $chunkTotal) * 100))
 
-		$chunkSql = "SELECT $columnList FROM $bracketed WHERE [$ChunkColumn] = $literal"
-		$transferParams = @{
-			Source				   = $Source
-			SourceDatabase		   = $SourceDatabase
-			Destination			   = $Destination
-			DestinationDatabase    = $DestinationDatabase
-			Table				   = $Table
-			SourceQuery			   = $chunkSql
-			SqlCredential		   = $SqlCredential
-			SourceCredential	   = $srcCred
-			DestinationCredential  = $dstCred
-			# ScriptMetadata wird bei jedem Chunk mitgegeben statt nur beim ersten - Invoke-sqmTableTransfer
-			# prueft selbst per Get-DbaDbTable, ob die Zieltabelle schon existiert, und legt sie nur an,
-			# wenn nicht (idempotent) - so entsteht kein Sonderfall fuer "welcher Chunk war der erste
-			# tatsaechlich ausgefuehrte" bei einem Wiederanlauf.
-			ScriptMetadata		   = $ScriptMetadata.IsPresent
-			IncludeForeignKeys	   = $IncludeForeignKeys
-			IncludeIndexes		   = $IncludeIndexes
-			IncludeTriggers		   = $IncludeTriggers
-			SkipConstraintHandling = $SkipConstraintHandling
-			RevalidateForeignKeys  = $RevalidateForeignKeys
-			KeepIdentity		   = $KeepIdentity
-			KeepNulls			   = $KeepNulls
-			ContinueOnError		   = $true
-			EnableException		   = $EnableException
-			NoReport			   = $true
-			Confirm				   = $false
-			WhatIf				   = $WhatIfPreference
-		}
-		if ($BatchSize) { $transferParams['BatchSize'] = $BatchSize }
+			# --- Skip-Check: dieser Chunk allein, per COUNT_BIG(*) WHERE [ChunkColumn] = Wert -
+			# macht einen erneuten Lauf nach einem Abbruch resumable, ganz ohne Primary-/Unique-Key.
+			try
+			{
+				$srcCount = [int64](Invoke-DbaQuery @srcConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
+				$dstCount = [int64](Invoke-DbaQuery @dstConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
+			}
+			catch
+			{
+				$srcCount = $null; $dstCount = $null
+			}
 
-		$chunkResults = Invoke-sqmTableTransfer @transferParams
-		foreach ($r in $chunkResults)
-		{
-			# Invoke-sqmTableTransfer's eigener CompareRowCount-Schritt vergleicht die GESAMTE Tabelle,
-			# nicht den WHERE-gefilterten Chunk - fuer jeden Chunk ausser dem letzten sieht das
-			# zwangslaeufig wie ein Mismatch aus, obwohl der Chunk selbst korrekt war. Wird unten durch
-			# einen chunk-scoped Vergleich ersetzt.
-			if ($r.Step -eq 'CompareRowCount') { continue }
-			$allResults.Add([PSCustomObject]@{ Table = $r.Table; Chunk = "$chunkValue"; Step = $r.Step; Status = $r.Status; Message = $r.Message; Timestamp = $r.Timestamp })
-		}
+			if ($null -ne $srcCount -and $srcCount -eq $dstCount)
+			{
+				Write-sqmTransferLog -Message "Chunk $chunkLabel bereits vollstaendig ($srcCount Zeile(n)) - uebersprungen." -FunctionName $functionName -Level 'INFO'
+				$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = "$chunkValue"; Step = 'SkipCompletedChunk'; Status = 'Skipped'; Message = "$srcCount Zeile(n) bereits identisch."; Timestamp = (Get-Date) })
+				continue
+			}
 
-		try
-		{
-			$srcCountAfter = [int64](Invoke-DbaQuery @srcConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
-			$dstCountAfter = [int64](Invoke-DbaQuery @dstConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
-			$chunkMatch = $srcCountAfter -eq $dstCountAfter
-			$allResults.Add([PSCustomObject]@{
-					Table = $qualified; Chunk = "$chunkValue"; Step = 'CompareRowCount'
-					Status = $(if ($chunkMatch) { 'Success' } else { 'Mismatch' })
-					Message = "Quelle=$srcCountAfter Ziel=$dstCountAfter Differenz=$($dstCountAfter - $srcCountAfter)"
-					Timestamp = (Get-Date)
-				})
-		}
-		catch
-		{
-			$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = "$chunkValue"; Step = 'CompareRowCount'; Status = 'Failed'; Message = $_.Exception.Message; Timestamp = (Get-Date) })
+			$chunkSql = "SELECT $columnList FROM $bracketed WHERE [$ChunkColumn] = $literal"
+			$transferParams = @{
+				Source				   = $Source
+				SourceDatabase		   = $SourceDatabase
+				Destination			   = $Destination
+				DestinationDatabase    = $DestinationDatabase
+				Table				   = $Table
+				SourceQuery			   = $chunkSql
+				SqlCredential		   = $SqlCredential
+				SourceCredential	   = $srcCred
+				DestinationCredential  = $dstCred
+				# Tabelle anlegen und FKs/Indizes/Trigger deaktivieren passiert oben bereits einmal
+				# fuer den gesamten Lauf, nicht mehr pro Chunk.
+				ScriptMetadata		   = $false
+				SkipConstraintHandling = $true
+				KeepIdentity		   = $KeepIdentity
+				KeepNulls			   = $KeepNulls
+				ContinueOnError		   = $true
+				EnableException		   = $EnableException
+				NoReport			   = $true
+				Confirm				   = $false
+				WhatIf				   = $WhatIfPreference
+			}
+			if ($BatchSize) { $transferParams['BatchSize'] = $BatchSize }
+
+			$chunkResults = Invoke-sqmTableTransfer @transferParams
+			foreach ($r in $chunkResults)
+			{
+				# Invoke-sqmTableTransfer's eigener CompareRowCount-Schritt vergleicht die GESAMTE Tabelle,
+				# nicht den WHERE-gefilterten Chunk - fuer jeden Chunk ausser dem letzten sieht das
+				# zwangslaeufig wie ein Mismatch aus, obwohl der Chunk selbst korrekt war. Wird unten durch
+				# einen chunk-scoped Vergleich ersetzt.
+				if ($r.Step -eq 'CompareRowCount') { continue }
+				$allResults.Add([PSCustomObject]@{ Table = $r.Table; Chunk = "$chunkValue"; Step = $r.Step; Status = $r.Status; Message = $r.Message; Timestamp = $r.Timestamp })
+			}
+
+			try
+			{
+				$srcCountAfter = [int64](Invoke-DbaQuery @srcConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
+				$dstCountAfter = [int64](Invoke-DbaQuery @dstConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
+				$chunkMatch = $srcCountAfter -eq $dstCountAfter
+				$allResults.Add([PSCustomObject]@{
+						Table = $qualified; Chunk = "$chunkValue"; Step = 'CompareRowCount'
+						Status = $(if ($chunkMatch) { 'Success' } else { 'Mismatch' })
+						Message = "Quelle=$srcCountAfter Ziel=$dstCountAfter Differenz=$($dstCountAfter - $srcCountAfter)"
+						Timestamp = (Get-Date)
+					})
+			}
+			catch
+			{
+				$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = "$chunkValue"; Step = 'CompareRowCount'; Status = 'Failed'; Message = $_.Exception.Message; Timestamp = (Get-Date) })
+			}
 		}
 	}
+	finally
+	{
+		Write-Progress -Id 3 -Activity "Chunked Transfer: $qualified" -Completed
 
-	Write-Progress -Id 3 -Activity "Chunked Transfer: $qualified" -Completed
+		if ($constraintsWereDisabled)
+		{
+			try
+			{
+				$enableResults = Enable-sqmTableConstraints -SqlInstance $Destination -Database $DestinationDatabase `
+															 -Table $Table -SqlCredential $dstCred -Revalidate $RevalidateForeignKeys `
+															 -Confirm:$false
+				$enableFailCount = @($enableResults | Where-Object Status -like 'Failed*').Count
+				$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = '(alle)'; Step = 'EnableConstraints'; Status = $(if ($enableFailCount -gt 0) { 'Warning' } else { 'Success' }); Message = "$($enableResults.Count) Objekt(e), $enableFailCount fehlgeschlagen."; Timestamp = (Get-Date) })
+			}
+			catch
+			{
+				# Nicht weiterwerfen - eine urspruengliche Ausnahme aus dem Chunk-Lauf darf nicht verdeckt werden.
+				$msg = "Re-Enable von FKs/Indizes/Triggern auf $qualified fehlgeschlagen: $($_.Exception.Message) - manuell pruefen!"
+				Write-Warning $msg
+				Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
+				$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = '(alle)'; Step = 'EnableConstraints'; Status = 'Failed'; Message = $msg; Timestamp = (Get-Date) })
+			}
+		}
+	}
 
 	$skippedChunks = @($allResults | Where-Object Step -eq 'SkipCompletedChunk').Count
 	$failCount = @($allResults | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound')).Count
