@@ -223,15 +223,73 @@ function Invoke-sqmChunkedTableTransfer
 						  -FunctionName $functionName -Level 'INFO'
 
 	# -SourceQuery maps columns by ORDINAL POSITION, not by name (see Copy-DbaDbTableData -Query).
-	# A plain SELECT * would include computed columns from the source - SqlBulkCopy cannot write an
-	# explicit value into a computed column on the destination, so that fails CopyData outright.
-	# Building an explicit, non-computed column list keeps the chunk query safe regardless of
-	# whether the table has any computed columns.
-	$colQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND is_computed = 0 ORDER BY column_id"
-	$columnNames = @(Invoke-DbaQuery @srcConnParams -Query $colQuery -As PSObject -EnableException | Select-Object -ExpandProperty name)
-	if ($columnNames.Count -eq 0)
+	# Two separate reasons a plain SELECT * breaks this:
+	#   1. Computed columns - SqlBulkCopy cannot write an explicit value into one, so any computed
+	#      column has to be excluded from the list entirely.
+	#   2. Column ORDER drift between source and destination - for a cross-instance transfer onto
+	#      an already-existing destination table (not freshly created by -ScriptMetadata here),
+	#      the destination's column order can legitimately differ from the source's (different
+	#      deployment history). SELECT * follows the SOURCE's order; if that doesn't match the
+	#      DESTINATION's order, SqlBulkCopy silently writes column N's data into whatever column
+	#      happens to sit at position N on the destination - wrong data in the wrong column, or
+	#      (if types/collations differ enough) an outright error like "locale id X of source
+	#      column A and locale id Y of destination column B do not match" - a real symptom hit
+	#      against FXUeberleitung. The fix: base the SELECT list on the DESTINATION's column order
+	#      when the destination table already exists, not the source's - only fall back to the
+	#      source's order when the destination doesn't exist yet (in which case -ScriptMetadata
+	#      creates it fresh from the source, so the two orders are identical anyway).
+	$srcColQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND is_computed = 0 ORDER BY column_id"
+	$srcColumnNames = @(Invoke-DbaQuery @srcConnParams -Query $srcColQuery -As PSObject -EnableException | Select-Object -ExpandProperty name)
+	if ($srcColumnNames.Count -eq 0)
 	{
 		throw "Konnte keine Spalten fuer $qualified auf '$Source'.'$SourceDatabase' ermitteln - Tabelle existiert nicht oder ist nicht lesbar."
+	}
+
+	$dstColumnNames = @()
+	try
+	{
+		$dstColQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND is_computed = 0 ORDER BY column_id"
+		$dstColumnNames = @(Invoke-DbaQuery @dstConnParams -Query $dstColQuery -As PSObject -EnableException | Select-Object -ExpandProperty name)
+	}
+	catch { $dstColumnNames = @() }
+
+	if ($dstColumnNames.Count -gt 0)
+	{
+		# Zieltabelle existiert bereits - deren Spaltenreihenfolge ist massgeblich. Nur Spalten
+		# verwenden, die auf BEIDEN Seiten existieren (per Name), damit eine echte Schema-Drift
+		# (fehlende/zusaetzliche Spalten) einen klaren Fehler statt einer verschobenen Zuordnung
+		# ergibt.
+		$srcSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$srcColumnNames, [System.StringComparer]::OrdinalIgnoreCase)
+		$dstSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$dstColumnNames, [System.StringComparer]::OrdinalIgnoreCase)
+		$columnNames = @($dstColumnNames | Where-Object { $srcSet.Contains($_) })
+		$missingOnSource = @($dstColumnNames | Where-Object { -not $srcSet.Contains($_) })
+		# Spalten, die nur auf der QUELLE existieren, wuerden sonst stillschweigend nie mitkopiert -
+		# im Unterschied zu $missingOnSource (Zielspalten ohne Quellentsprechung, unproblematisch,
+		# da fuer sie ohnehin keine Daten da sind) bedeutet das hier echten, unbemerkten Datenverlust.
+		$missingOnDestination = @($srcColumnNames | Where-Object { -not $dstSet.Contains($_) })
+		if ($missingOnSource.Count -gt 0)
+		{
+			$msg = "Spalte(n) nur auf Ziel vorhanden, werden bei $qualified uebersprungen: $($missingOnSource -join ', ')"
+			Write-Warning $msg
+			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
+		}
+		if ($missingOnDestination.Count -gt 0)
+		{
+			$msg = "Spalte(n) nur auf Quelle vorhanden, werden bei $qualified NICHT uebertragen (fehlen auf dem Ziel): $($missingOnDestination -join ', ')"
+			Write-Warning $msg
+			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
+		}
+	}
+	else
+	{
+		# Zieltabelle existiert noch nicht - wird gleich (per -ScriptMetadata im ersten Chunk) aus
+		# der Quelle erzeugt, Spaltenreihenfolge entspricht dann der Quelle.
+		$columnNames = $srcColumnNames
+	}
+
+	if ($columnNames.Count -eq 0)
+	{
+		throw "Keine gemeinsamen (nicht-berechneten) Spalten zwischen Quelle und Ziel fuer $qualified gefunden."
 	}
 	$columnList = ($columnNames | ForEach-Object { "[$_]" }) -join ', '
 
