@@ -119,13 +119,14 @@ and this is the one step that actually touches data, scoped to just the tables t
 | `Export-sqmTableSchema` | Scripts table DDL from a source instance (SMO Scripter). |
 | `New-sqmTableFromScript` | Executes scripted DDL batches against a target instance. |
 | `Copy-sqmTableSchema` | Convenience wrapper: export + create in one call. |
-| `Disable-sqmTableConstraints` | Disables FKs / non-clustered indexes on a table. |
-| `Enable-sqmTableConstraints` | Re-enables (rebuilds) previously disabled FKs / indexes. |
+| `Disable-sqmTableConstraints` | Disables FKs / non-clustered indexes / triggers on a table. |
+| `Enable-sqmTableConstraints` | Re-enables (rebuilds) previously disabled FKs / indexes / triggers. |
 | `Copy-sqmTableData` | Bulk-copies table data (wraps `Copy-DbaDbTableData`). |
 | `Compare-sqmTableRowCount` | Compares row counts source vs. target. |
 | `Compare-sqmDatabaseRowCount` | Compares row counts for every table between two databases, no table list required. |
 | `Sync-sqmTableData` | Hash-diffs source vs. target and applies only insert/update/delete. |
-| `Export-sqmTransferReport` | Builds the HTML summary/row-count report. |
+| `Export-sqmTransferReport` | Builds the HTML summary/row-count report for one `Invoke-sqmTableTransfer` run. |
+| `Export-sqmDatabaseComparisonReport` | Builds a single consolidated complete/missing HTML report across a whole source-destination pair (pairs with `Compare-sqmDatabaseRowCount` and `Invoke-sqmTableTransfer -NoReport`). |
 | `Show-sqmTableTransferGui` | WinForms GUI for the whole workflow. |
 | `Get-sqmTransferConfig` / `Set-sqmTransferConfig` | Module configuration (log path, batch size, etc.). |
 

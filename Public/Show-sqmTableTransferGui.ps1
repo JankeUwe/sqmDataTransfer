@@ -77,6 +77,39 @@ function Show-sqmTableTransferGui
 		$tb.BorderStyle = 'FixedSingle'
 	}
 
+	# Faerbt/beschriftet eine Tabellen-Grid-Zeile anhand eines Compare-sqmDatabaseRowCount-Status
+	# (oder $null, wenn das Ziel beim Laden nicht erreichbar war - dann bleibt der bisherige
+	# "Unbekannt"-Zustand erhalten). 'Match' = bereits fertig uebertragen: Haekchen raus, gruen
+	# markiert und von "Alle" ausgenommen (siehe $btnSelectAll), damit ein Wiederholungslauf auf
+	# einem grossen Tabellen-Set nicht versehentlich schon fertige Tabellen erneut anfasst.
+	$doneBackColor = [System.Drawing.Color]::FromArgb(210, 240, 220)
+	$doneForeColor = [System.Drawing.Color]::FromArgb(20, 90, 50)
+	function Set-TableGridRowStatus($row, $cmp)
+	{
+		$isDone = $cmp -and $cmp.Status -eq 'Match'
+		$action = if (-not $cmp) { Get-sqmTransferString -Key 'Gui.ActionUnknown' }
+		elseif ($isDone) { Get-sqmTransferString -Key 'Gui.ActionDone' }
+		elseif ($cmp.Status -eq 'MissingOnDestination') { Get-sqmTransferString -Key 'Gui.ActionCreate' }
+		else { Get-sqmTransferString -Key 'Gui.ActionTransfer' }
+
+		$row.Cells[2].Value = $action
+		$row.Cells[4].Value = if ($cmp -and $null -ne $cmp.DestinationRows) { "{0:N0}" -f [int64]$cmp.DestinationRows } else { '' }
+
+		if ($isDone)
+		{
+			$row.Cells[0].Value = $false
+			$row.Tag = 'Done'
+			$row.DefaultCellStyle.BackColor = $doneBackColor
+			$row.DefaultCellStyle.ForeColor = $doneForeColor
+		}
+		else
+		{
+			$row.Tag = $null
+			$row.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
+			$row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Black
+		}
+	}
+
 	function ConvertTo-DataTable
 	{
 		param ([Parameter(ValueFromPipeline = $true)]$InputObject)
@@ -102,7 +135,7 @@ function Show-sqmTableTransferGui
 	$form = New-Object System.Windows.Forms.Form
 	$Global:__sqmDataTransferGuiCtx.Form = $form
 	$form.Text = Get-sqmTransferString -Key 'Gui.Title'
-	$form.Size = New-Object System.Drawing.Size(980, 900)
+	$form.Size = New-Object System.Drawing.Size(980, 926)
 	$form.StartPosition = 'CenterScreen'
 	$form.BackColor = $cPanel
 	$form.ForeColor = $cText
@@ -287,6 +320,16 @@ function Show-sqmTableTransferGui
 	$btnLoadTables.Size = New-Object System.Drawing.Size(120, 26)
 	$btnLoadTables.Anchor = 'Top,Right'
 
+	# Datenbankweiter Vergleich, unabhaengig vom geladenen Grid/den ausgewaehlten Tabellen - siehe
+	# Notiz oben bei Gui.ReportPerRun: Ersatz fuer "ein Bericht pro Invoke-sqmTableTransfer-Aufruf",
+	# wenn ein grosses Tabellenset einzeln (Haekchen fuer Haekchen) uebertragen wird.
+	$btnCompareAll = New-Object System.Windows.Forms.Button
+	$btnCompareAll.Text = Get-sqmTransferString -Key 'Gui.CompareAllButton'
+	Style-Button $btnCompareAll
+	$btnCompareAll.Location = New-Object System.Drawing.Point(700, 192)
+	$btnCompareAll.Size = New-Object System.Drawing.Size(120, 26)
+	$btnCompareAll.Anchor = 'Top,Right'
+
 	# Tabellen-Grid: Checkbox | Tabelle | Aktion (Anlegen/Transfer-Symbol) | Zeilen (Quelle, lazy)
 	$dgvTables = New-Object System.Windows.Forms.DataGridView
 	$dgvTables.Location = New-Object System.Drawing.Point(12, 220)
@@ -311,10 +354,13 @@ function Show-sqmTableTransferGui
 	$colRows = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
 	$colRows.Name = 'RowCount'; $colRows.HeaderText = Get-sqmTransferString -Key 'Gui.ColRowCount'; $colRows.ReadOnly = $true; $colRows.Width = 120
 	$colRows.DefaultCellStyle.Alignment = 'MiddleRight'
+	$colRowsDst = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+	$colRowsDst.Name = 'RowCountDst'; $colRowsDst.HeaderText = Get-sqmTransferString -Key 'Gui.ColRowCountDst'; $colRowsDst.ReadOnly = $true; $colRowsDst.Width = 120
+	$colRowsDst.DefaultCellStyle.Alignment = 'MiddleRight'
 
-	$dgvTables.Columns.AddRange([System.Windows.Forms.DataGridViewColumn[]]@($colChk, $colName, $colAction, $colRows))
+	$dgvTables.Columns.AddRange([System.Windows.Forms.DataGridViewColumn[]]@($colChk, $colName, $colAction, $colRows, $colRowsDst))
 
-	$form.Controls.AddRange(@($lblTables, $btnSelectAll, $btnSelectNone, $btnLoadTables, $dgvTables))
+	$form.Controls.AddRange(@($lblTables, $btnSelectAll, $btnSelectNone, $btnCompareAll, $btnLoadTables, $dgvTables))
 
 	$btnLoadTables.Add_Click({
 			$dgvTables.Rows.Clear()
@@ -325,27 +371,31 @@ function Show-sqmTableTransferGui
 				if ($srcCred) { $srcConnParams['SqlCredential'] = $srcCred }
 				$tables = Get-DbaDbTable @srcConnParams | Sort-Object Schema, Name
 
-				# Bestehende Tabellen im Ziel ermitteln (best effort - Ziel evtl. noch nicht befuellt/erreichbar)
-				$dstExisting = $null
+				# Zeilenzahl-Abgleich zum Ziel (best effort - Ziel evtl. noch nicht befuellt/erreichbar).
+				# Compare-sqmDatabaseRowCount liest beide Seiten ueber sys.partitions (Metadaten, kein
+				# Datenscan - siehe dort) in zwei Abfragen fuer ALLE Tabellen auf einmal, unabhaengig
+				# von der Tabellengroesse. Liefert nebenbei auch, ob die Zieltabelle ueberhaupt existiert.
+				$dstCompareByTable = $null
 				if ($dstPanel.Instance.Text -and $dstPanel.Database.Text)
 				{
 					try
 					{
 						$dstCred = Get-CredentialFromPanel $dstPanel
-						$dstConnParams = @{ SqlInstance = $dstPanel.Instance.Text; Database = $dstPanel.Database.Text; ErrorAction = 'Stop' }
-						if ($dstCred) { $dstConnParams['SqlCredential'] = $dstCred }
-						$dstExisting = @(Get-DbaDbTable @dstConnParams | ForEach-Object { "$($_.Schema).$($_.Name)" })
+						$cmpResults = Compare-sqmDatabaseRowCount -Source $srcPanel.Instance.Text -SourceDatabase $srcPanel.Database.Text `
+																	-Destination $dstPanel.Instance.Text -DestinationDatabase $dstPanel.Database.Text `
+																	-SourceCredential $srcCred -DestinationCredential $dstCred
+						$dstCompareByTable = @{}
+						foreach ($c in $cmpResults) { $dstCompareByTable[$c.Table] = $c }
 					}
-					catch { $dstExisting = $null }
+					catch { $dstCompareByTable = $null }
 				}
 
 				foreach ($tbl in $tables)
 				{
 					$fullName = "$($tbl.Schema).$($tbl.Name)"
-					$action = if ($null -eq $dstExisting) { Get-sqmTransferString -Key 'Gui.ActionUnknown' }
-					elseif ($dstExisting -contains $fullName) { Get-sqmTransferString -Key 'Gui.ActionTransfer' }
-					else { Get-sqmTransferString -Key 'Gui.ActionCreate' }
-					$dgvTables.Rows.Add($false, $fullName, $action, '') | Out-Null
+					$cmp = if ($dstCompareByTable) { $dstCompareByTable[$fullName] } else { $null }
+					$rowIndex = $dgvTables.Rows.Add($false, $fullName, '', '', '')
+					Set-TableGridRowStatus $dgvTables.Rows[$rowIndex] $cmp
 				}
 				if ($dgvTables.Rows.Count -eq 0)
 				{
@@ -355,6 +405,67 @@ function Show-sqmTableTransferGui
 			catch
 			{
 				[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.TablesLoadError' -FormatArgs @($_.Exception.Message)), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Error') | Out-Null
+			}
+		})
+
+	# Ein einziger konsolidierter Bericht ueber die gesamte Quelle/Ziel-Kombination - Ersatz fuer
+	# "X Einzelberichte" bei tabellenweisem Vorgehen (siehe Gui.ReportPerRun unten). Nutzt dieselbe
+	# guenstige sys.partitions-Abfrage wie das Grid, prueft aber Abweichungen per -VerifyMismatches
+	# exakt nach, da dieser Button seltener und gezielt ausgeloest wird.
+	$btnCompareAll.Add_Click({
+			if (-not $srcPanel.Instance.Text -or -not $srcPanel.Database.Text -or -not $dstPanel.Instance.Text -or -not $dstPanel.Database.Text)
+			{
+				[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.SpecifySourceAndDest'), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Warning') | Out-Null
+				return
+			}
+
+			$btnCompareAll.Enabled = $false
+			$lblStatus.ForeColor = $cDim
+			$lblStatus.Text = Get-sqmTransferString -Key 'Gui.CompareAllRunning'
+			$form.Refresh()
+			[System.Windows.Forms.Application]::DoEvents()
+
+			try
+			{
+				$srcCred = Get-CredentialFromPanel $srcPanel
+				$dstCred = Get-CredentialFromPanel $dstPanel
+				$cmp = Compare-sqmDatabaseRowCount -Source $srcPanel.Instance.Text -SourceDatabase $srcPanel.Database.Text `
+													-Destination $dstPanel.Instance.Text -DestinationDatabase $dstPanel.Database.Text `
+													-SourceCredential $srcCred -DestinationCredential $dstCred -VerifyMismatches
+
+				$reportPath = if ($txtReportPath.Text) { $txtReportPath.Text } else { Get-sqmTransferConfig -Key 'OutputPath' }
+				if (-not (Test-Path $reportPath)) { New-Item -ItemType Directory -Path $reportPath -Force | Out-Null }
+				$safeSource = "$($srcPanel.Instance.Text).$($srcPanel.Database.Text)" -replace '[\\:.]', '_'
+				$safeDest = "$($dstPanel.Instance.Text).$($dstPanel.Database.Text)" -replace '[\\:.]', '_'
+				$datestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+				$htmlFile = Join-Path $reportPath "sqmDataTransfer_Gesamtvergleich_${safeSource}_zu_${safeDest}_${datestamp}.html"
+
+				Export-sqmDatabaseComparisonReport -Source $srcPanel.Instance.Text -SourceDatabase $srcPanel.Database.Text `
+													-Destination $dstPanel.Instance.Text -DestinationDatabase $dstPanel.Database.Text `
+													-Comparison $cmp -FilePath $htmlFile -NoOpen:$chkNoOpen.Checked
+
+				# Grid live nachziehen, falls bereits geladen - dieselbe Logik wie nach einem Transfer-Lauf.
+				$cmpByTable = @{}
+				foreach ($c in $cmp) { $cmpByTable[$c.Table] = $c }
+				foreach ($row in $dgvTables.Rows)
+				{
+					$tn = $row.Cells[1].Value
+					if ($cmpByTable.ContainsKey($tn)) { Set-TableGridRowStatus $row $cmpByTable[$tn] }
+				}
+
+				$openCount = @($cmp | Where-Object Status -ne 'Match').Count
+				$lblStatus.ForeColor = if ($openCount -gt 0) { $cErr } else { $cOk }
+				$lblStatus.Text = Get-sqmTransferString -Key 'Gui.CompareAllDone' -FormatArgs @($cmp.Count, $openCount)
+			}
+			catch
+			{
+				$lblStatus.ForeColor = $cErr
+				$lblStatus.Text = Get-sqmTransferString -Key 'Gui.CompareAllError' -FormatArgs @($_.Exception.Message)
+				[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.CompareAllError' -FormatArgs @($_.Exception.Message)), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Error') | Out-Null
+			}
+			finally
+			{
+				$btnCompareAll.Enabled = $true
 			}
 		})
 
@@ -387,7 +498,7 @@ function Show-sqmTableTransferGui
 				if ($cred) { $connParams['SqlCredential'] = $cred }
 				$q = "SELECT COUNT_BIG(*) AS [RowCount] FROM [$($parts[0])].[$($parts[1])]"
 				$cnt = (Invoke-DbaQuery @connParams -Query $q -As PSObject -EnableException).RowCount
-				$row.Cells[3].Value = "$cnt"
+				$row.Cells[3].Value = "{0:N0}" -f [int64]$cnt
 			}
 			catch
 			{
@@ -397,7 +508,9 @@ function Show-sqmTableTransferGui
 
 	$btnSelectAll.Add_Click({
 			$suppressRowCountFetch = $true
-			foreach ($row in $dgvTables.Rows) { $row.Cells[0].Value = $true }
+			# Bereits fertige (gruen markierte) Tabellen werden von "Alle" ausgenommen - siehe
+			# Set-TableGridRowStatus oben.
+			foreach ($row in $dgvTables.Rows) { if ($row.Tag -ne 'Done') { $row.Cells[0].Value = $true } }
 			$suppressRowCountFetch = $false
 		})
 	$btnSelectNone.Add_Click({
@@ -492,13 +605,15 @@ function Show-sqmTableTransferGui
 	$form.Controls.Add($grpOpt)
 
 	# --- HTML report options -----------------------------------------------------
-	# Ein Bericht wird nach jedem Lauf immer erzeugt (wie bei sqmSQLTool) - hier laesst sich nur
-	# der Zielordner ueberschreiben und das automatische Oeffnen abschalten (-NoOpen).
+	# Bericht pro Invoke-sqmTableTransfer-Aufruf ist per Checkbox abschaltbar (Gui.ReportPerRun) -
+	# bei tabellenweisem Vorgehen ueber ein grosses Set haeuft sich sonst ein Bericht pro Klick an,
+	# ohne Gesamtueberblick. $btnCompareAll (oben beim Tabellen-Grid) liefert den Gesamtueberblick
+	# stattdessen ueber einen einzigen konsolidierten Bericht.
 	$grpReport = New-Object System.Windows.Forms.GroupBox
 	$grpReport.Text = Get-sqmTransferString -Key 'Gui.ReportGroup'
 	$grpReport.ForeColor = $cText
 	$grpReport.Location = New-Object System.Drawing.Point(12, 530)
-	$grpReport.Size = New-Object System.Drawing.Size(938, 58)
+	$grpReport.Size = New-Object System.Drawing.Size(938, 84)
 	$grpReport.Anchor = 'Top,Left,Right'
 
 	$lblReportPath = New-Object System.Windows.Forms.Label
@@ -534,7 +649,14 @@ function Show-sqmTableTransferGui
 	$chkNoOpen.Size = New-Object System.Drawing.Size(130, 22)
 	$chkNoOpen.Anchor = 'Top,Right'
 
-	$grpReport.Controls.AddRange(@($lblReportPath, $txtReportPath, $btnBrowseReport, $chkNoOpen))
+	$chkReportPerRun = New-Object System.Windows.Forms.CheckBox
+	$chkReportPerRun.Text = Get-sqmTransferString -Key 'Gui.ReportPerRun'
+	$chkReportPerRun.ForeColor = $cText
+	$chkReportPerRun.Checked = $true
+	$chkReportPerRun.Location = New-Object System.Drawing.Point(15, 55)
+	$chkReportPerRun.Size = New-Object System.Drawing.Size(260, 22)
+
+	$grpReport.Controls.AddRange(@($lblReportPath, $txtReportPath, $btnBrowseReport, $chkNoOpen, $chkReportPerRun))
 	$form.Controls.Add($grpReport)
 
 	# --- Run / Close buttons ------------------------------------------------------
@@ -542,19 +664,19 @@ function Show-sqmTableTransferGui
 	$btnRun.Text = Get-sqmTransferString -Key 'Gui.RunButton'
 	Style-Button $btnRun
 	$btnRun.BackColor = $cAccent
-	$btnRun.Location = New-Object System.Drawing.Point(12, 600)
+	$btnRun.Location = New-Object System.Drawing.Point(12, 626)
 	$btnRun.Size = New-Object System.Drawing.Size(160, 32)
 
 	$btnClose = New-Object System.Windows.Forms.Button
 	$btnClose.Text = Get-sqmTransferString -Key 'Gui.CloseButton'
 	Style-Button $btnClose
-	$btnClose.Location = New-Object System.Drawing.Point(182, 600)
+	$btnClose.Location = New-Object System.Drawing.Point(182, 626)
 	$btnClose.Size = New-Object System.Drawing.Size(100, 32)
 	$btnClose.Add_Click({ $form.Close() })
 
 	$lblStatus = New-Object System.Windows.Forms.Label
 	$lblStatus.Text = ''
-	$lblStatus.Location = New-Object System.Drawing.Point(300, 606)
+	$lblStatus.Location = New-Object System.Drawing.Point(300, 632)
 	$lblStatus.Size = New-Object System.Drawing.Size(650, 22)
 	$lblStatus.Anchor = 'Top,Left,Right'
 	$lblStatus.ForeColor = $cDim
@@ -564,12 +686,12 @@ function Show-sqmTableTransferGui
 	# --- Log output ----------------------------------------------------------------
 	$lblLog = New-Object System.Windows.Forms.Label
 	$lblLog.Text = Get-sqmTransferString -Key 'Gui.LogLabel'
-	$lblLog.Location = New-Object System.Drawing.Point(12, 640)
+	$lblLog.Location = New-Object System.Drawing.Point(12, 666)
 	$lblLog.Size = New-Object System.Drawing.Size(200, 20)
 	$lblLog.ForeColor = $cDim
 
 	$txtLog = New-Object System.Windows.Forms.TextBox
-	$txtLog.Location = New-Object System.Drawing.Point(12, 662)
+	$txtLog.Location = New-Object System.Drawing.Point(12, 688)
 	$txtLog.Size = New-Object System.Drawing.Size(938, 90)
 	$txtLog.Anchor = 'Top,Left,Right'
 	$txtLog.Multiline = $true
@@ -584,13 +706,13 @@ function Show-sqmTableTransferGui
 	# --- Result grid -----------------------------------------------------------
 	$lblGrid = New-Object System.Windows.Forms.Label
 	$lblGrid.Text = Get-sqmTransferString -Key 'Gui.ResultLabel'
-	$lblGrid.Location = New-Object System.Drawing.Point(12, 758)
+	$lblGrid.Location = New-Object System.Drawing.Point(12, 784)
 	$lblGrid.Size = New-Object System.Drawing.Size(300, 20)
 	$lblGrid.ForeColor = $cDim
 	$lblGrid.Anchor = 'Bottom,Left'
 
 	$dgv = New-Object System.Windows.Forms.DataGridView
-	$dgv.Location = New-Object System.Drawing.Point(12, 780)
+	$dgv.Location = New-Object System.Drawing.Point(12, 806)
 	$dgv.Size = New-Object System.Drawing.Size(938, 70)
 	$dgv.Anchor = 'Bottom,Top,Left,Right'
 	$dgv.BackgroundColor = $cWindow
@@ -649,6 +771,7 @@ function Show-sqmTableTransferGui
 				}
 				if ($txtReportPath.Text) { $params['OutputPath'] = $txtReportPath.Text }
 				$params['NoOpen'] = $chkNoOpen.Checked
+				$params['NoReport'] = -not $chkReportPerRun.Checked
 				$srcCred = Get-CredentialFromPanel $srcPanel
 				$dstCred = Get-CredentialFromPanel $dstPanel
 				if ($srcCred) { $params['SourceCredential'] = $srcCred }
@@ -657,6 +780,26 @@ function Show-sqmTableTransferGui
 				$results = Invoke-sqmTableTransfer @params
 
 				$dgv.DataSource = ($results | ConvertTo-DataTable)
+
+				# Tabellen-Grid live nachziehen: fertig uebertragene Tabellen (Quelle = Ziel) werden
+				# gruen markiert, ihr Haekchen entfernt und die Zielzeilenzahl eingetragen - damit bei
+				# einem tabellenweisen Ablauf ueber mehrere Laeufe hinweg auf einen Blick erkennbar ist,
+				# was schon erledigt ist. Best effort: ein Fehlschlag hier darf den Lauf nicht als
+				# Ganzes als fehlgeschlagen erscheinen lassen.
+				try
+				{
+					$refreshCmp = Compare-sqmDatabaseRowCount -Source $srcPanel.Instance.Text -SourceDatabase $srcPanel.Database.Text `
+															   -Destination $dstPanel.Instance.Text -DestinationDatabase $dstPanel.Database.Text `
+															   -Table $selectedTables -SourceCredential $srcCred -DestinationCredential $dstCred
+					$refreshByTable = @{}
+					foreach ($c in $refreshCmp) { $refreshByTable[$c.Table] = $c }
+					foreach ($row in $dgvTables.Rows)
+					{
+						$tn = $row.Cells[1].Value
+						if ($refreshByTable.ContainsKey($tn)) { Set-TableGridRowStatus $row $refreshByTable[$tn] }
+					}
+				}
+				catch { }
 
 				$failCount = @($results | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound')).Count
 				$lblStatus.ForeColor = if ($failCount -gt 0) { $cErr } else { $cOk }

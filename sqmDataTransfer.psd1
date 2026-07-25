@@ -69,6 +69,7 @@
 		'Set-sqmTransferConfig',
 		'Export-sqmTableSchema',
 		'Export-sqmTransferReport',
+		'Export-sqmDatabaseComparisonReport',
 		'New-sqmTableFromScript',
 		'Copy-sqmTableSchema',
 		'Disable-sqmTableConstraints',

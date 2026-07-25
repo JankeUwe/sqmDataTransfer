@@ -90,12 +90,19 @@
     Folder the HTML report is written to (filename is generated automatically). Same convention
     as sqmSQLTool's report-generating functions: defaults to Get-sqmTransferConfig -Key
     'OutputPath' (falling back to "C:\System\WinSrvLog\MSSQL") when not specified - i.e. the same
-    location as sqmSQLTool uses by default. A report is always produced; there is no switch to
-    turn it off. Report generation failures are logged/warned but do not fail the transfer itself.
+    location as sqmSQLTool uses by default. Report generation failures are logged/warned but do
+    not fail the transfer itself.
+
+.PARAMETER NoReport
+    Skip generating the per-run HTML report entirely. Useful when transferring a large table set
+    one call at a time (e.g. from the GUI's table grid) - a report per call would otherwise pile up
+    into dozens of files with no overview. Compare-sqmDatabaseRowCount /
+    Export-sqmDatabaseComparisonReport give a single consolidated complete/missing view across the
+    whole source-destination pair instead.
 
 .PARAMETER NoOpen
     Do not automatically open the HTML report after the run. Default: opens it (same convention
-    as sqmSQLTool's Invoke-sqmOpenReport / -NoOpen).
+    as sqmSQLTool's Invoke-sqmOpenReport / -NoOpen). Ignored when -NoReport is set.
 
 .PARAMETER Confirm
 .PARAMETER WhatIf
@@ -175,6 +182,8 @@ function Invoke-sqmTableTransfer
 		[switch]$EnableException,
 		[Parameter(Mandatory = $false)]
 		[string]$OutputPath,
+		[Parameter(Mandatory = $false)]
+		[switch]$NoReport,
 		[Parameter(Mandatory = $false)]
 		[switch]$NoOpen
 	)
@@ -452,23 +461,26 @@ function Invoke-sqmTableTransfer
 		Write-sqmTransferLog -Message $summaryMsg -FunctionName $functionName -Level 'INFO'
 		Write-Host $summaryMsg -ForegroundColor $(if ($failCount -gt 0) { 'Yellow' } else { 'Green' })
 
-		try
+		if (-not $NoReport)
 		{
-			if (-not (Test-Path $OutputPath)) { New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null }
+			try
+			{
+				if (-not (Test-Path $OutputPath)) { New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null }
 
-			$safeSource = "$Source.$SourceDatabase" -replace '[\\:.]', '_'
-			$safeDest = "$Destination.$DestinationDatabase" -replace '[\\:.]', '_'
-			$datestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-			$htmlFile = Join-Path $OutputPath "sqmDataTransfer_TransferReport_${safeSource}_to_${safeDest}_${datestamp}.html"
+				$safeSource = "$Source.$SourceDatabase" -replace '[\\:.]', '_'
+				$safeDest = "$Destination.$DestinationDatabase" -replace '[\\:.]', '_'
+				$datestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+				$htmlFile = Join-Path $OutputPath "sqmDataTransfer_TransferReport_${safeSource}_to_${safeDest}_${datestamp}.html"
 
-			Export-sqmTransferReport -Source $Source -SourceDatabase $SourceDatabase `
-									  -Destination $Destination -DestinationDatabase $DestinationDatabase `
-									  -Results $results -RowCounts $rowCountResults -FilePath $htmlFile -NoOpen:$NoOpen
-		}
-		catch
-		{
-			Write-Warning (Get-sqmTransferString -Key 'InvokeTransfer.ReportFailed' -FormatArgs @($_.Exception.Message))
-			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.ReportFailed' -FormatArgs @($_.Exception.Message)) -FunctionName $functionName -Level 'ERROR'
+				Export-sqmTransferReport -Source $Source -SourceDatabase $SourceDatabase `
+										  -Destination $Destination -DestinationDatabase $DestinationDatabase `
+										  -Results $results -RowCounts $rowCountResults -FilePath $htmlFile -NoOpen:$NoOpen
+			}
+			catch
+			{
+				Write-Warning (Get-sqmTransferString -Key 'InvokeTransfer.ReportFailed' -FormatArgs @($_.Exception.Message))
+				Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.ReportFailed' -FormatArgs @($_.Exception.Message)) -FunctionName $functionName -Level 'ERROR'
+			}
 		}
 
 		return $results
