@@ -49,7 +49,18 @@ function Show-sqmTableTransferGui
 	# schlaegt aber exakt mit diesem Lademechanismus fehl). $Global: ist das einzige Scope, das
 	# in beiden Faellen zuverlaessig funktioniert; ein einzelnes, klar benanntes Kontextobjekt
 	# haelt den globalen Namensraum sauber. Wird am Ende der Funktion wieder entfernt.
-	$Global:__sqmDataTransferGuiCtx = [PSCustomObject]@{ cDim = $cDim; cOk = $cOk; cErr = $cErr; Form = $null }
+	#
+	# Aus demselben Grund wird hier auch eine direkte Referenz auf Get-sqmTransferString (eine
+	# private Modul-Funktion) mitgegeben: ein unqualifizierter Aufruf des Funktionsnamens aus
+	# einem .GetNewClosure()-Handler heraus, der ueber ein echtes WinForms-Click-Event (nicht per
+	# direktem PowerShell-Aufruf) feuert, findet die Funktion nicht ("nicht erkannt") - reproduziert
+	# per echtem Mausklick auf den fertig geladenen Modul-Dialog. Der per ${function:...}
+	# eingefangene ScriptBlock wird stattdessen ueber & aufgerufen und umgeht die fehlgeschlagene
+	# Namensaufloesung komplett.
+	$Global:__sqmDataTransferGuiCtx = [PSCustomObject]@{
+		cDim = $cDim; cOk = $cOk; cErr = $cErr; Form = $null
+		GetString = ${function:Get-sqmTransferString}
+	}
 
 	function Style-Button($b)
 	{
@@ -203,7 +214,7 @@ function Show-sqmTableTransferGui
 		$btnConnect.Add_Click({
 				$ctx = $Global:__sqmDataTransferGuiCtx
 				$lblConnStatus.ForeColor = $ctx.cDim
-				$lblConnStatus.Text = Get-sqmTransferString -Key 'Gui.Connecting'
+				$lblConnStatus.Text = & $ctx.GetString -Key 'Gui.Connecting'
 				$ctx.Form.Refresh()
 				[System.Windows.Forms.Application]::DoEvents()
 				try
@@ -221,12 +232,12 @@ function Show-sqmTableTransferGui
 					foreach ($n in $dbNames) { $cmbDb.Items.Add($n) | Out-Null }
 					if ($currentText) { $cmbDb.Text = $currentText }
 					$lblConnStatus.ForeColor = $ctx.cOk
-					$lblConnStatus.Text = Get-sqmTransferString -Key 'Gui.Connected' -FormatArgs @($dbNames.Count, $srv.VersionString)
+					$lblConnStatus.Text = & $ctx.GetString -Key 'Gui.Connected' -FormatArgs @($dbNames.Count, $srv.VersionString)
 				}
 				catch
 				{
 					$lblConnStatus.ForeColor = $ctx.cErr
-					$lblConnStatus.Text = Get-sqmTransferString -Key 'Gui.ConnectError' -FormatArgs @($_.Exception.Message)
+					$lblConnStatus.Text = & $ctx.GetString -Key 'Gui.ConnectError' -FormatArgs @($_.Exception.Message)
 				}
 			}.GetNewClosure())
 
