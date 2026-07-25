@@ -21,9 +21,12 @@
            match is skipped - this is what makes a re-run after a partial failure resume from
            where it left off, without needing a row-level key.
         4. Any slice that doesn't match gets a normal Invoke-sqmTableTransfer call scoped to just
-           that value via -SourceQuery (SELECT * ... WHERE [ChunkColumn] = value), with per-chunk
-           reports suppressed (-NoReport) so a large chunk count doesn't produce a report pile-up -
-           see Export-sqmTransferReport for the single consolidated report written at the end.
+           that value via -SourceQuery (SELECT <non-computed columns> ... WHERE [ChunkColumn] =
+           value - computed columns are excluded since -SourceQuery maps columns by ordinal
+           position and SqlBulkCopy cannot write an explicit value into a computed column), with
+           per-chunk reports suppressed (-NoReport) so a large chunk count doesn't produce a
+           report pile-up - see Export-sqmTransferReport for the single consolidated report
+           written at the end.
 
 .PARAMETER Source
     Source SQL Server instance.
@@ -100,8 +103,15 @@
     Folder the single consolidated HTML report is written to. Same convention as
     Invoke-sqmTableTransfer.
 
+.PARAMETER NoReport
+    Skip generating this table's consolidated HTML report entirely. Useful when chunk-transferring
+    several large tables in a row (one Invoke-sqmChunkedTableTransfer call per table) - a report
+    per table would otherwise pile up the same way a report per Invoke-sqmTableTransfer call did.
+    Use Invoke-sqmCompleteTransferReport afterwards for a single report covering every table.
+
 .PARAMETER NoOpen
-    Do not automatically open the consolidated HTML report after the run.
+    Do not automatically open the consolidated HTML report after the run. Ignored when -NoReport
+    is set.
 
 .PARAMETER Confirm
 .PARAMETER WhatIf
@@ -170,6 +180,8 @@ function Invoke-sqmChunkedTableTransfer
 		[Parameter(Mandatory = $false)]
 		[string]$OutputPath,
 		[Parameter(Mandatory = $false)]
+		[switch]$NoReport,
+		[Parameter(Mandatory = $false)]
 		[switch]$NoOpen
 	)
 
@@ -209,6 +221,19 @@ function Invoke-sqmChunkedTableTransfer
 
 	Write-sqmTransferLog -Message "Invoke-sqmChunkedTableTransfer: '$Source'.'$SourceDatabase'.$qualified -> '$Destination'.'$DestinationDatabase' per '$ChunkColumn'" `
 						  -FunctionName $functionName -Level 'INFO'
+
+	# -SourceQuery maps columns by ORDINAL POSITION, not by name (see Copy-DbaDbTableData -Query).
+	# A plain SELECT * would include computed columns from the source - SqlBulkCopy cannot write an
+	# explicit value into a computed column on the destination, so that fails CopyData outright.
+	# Building an explicit, non-computed column list keeps the chunk query safe regardless of
+	# whether the table has any computed columns.
+	$colQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND is_computed = 0 ORDER BY column_id"
+	$columnNames = @(Invoke-DbaQuery @srcConnParams -Query $colQuery -As PSObject -EnableException | Select-Object -ExpandProperty name)
+	if ($columnNames.Count -eq 0)
+	{
+		throw "Konnte keine Spalten fuer $qualified auf '$Source'.'$SourceDatabase' ermitteln - Tabelle existiert nicht oder ist nicht lesbar."
+	}
+	$columnList = ($columnNames | ForEach-Object { "[$_]" }) -join ', '
 
 	$chunkQuery = "SELECT DISTINCT [$ChunkColumn] AS ChunkValue FROM $bracketed ORDER BY [$ChunkColumn]"
 	$chunkValues = @(Invoke-DbaQuery @srcConnParams -Query $chunkQuery -As PSObject -EnableException | Select-Object -ExpandProperty ChunkValue)
@@ -273,7 +298,7 @@ function Invoke-sqmChunkedTableTransfer
 			continue
 		}
 
-		$chunkSql = "SELECT * FROM $bracketed WHERE [$ChunkColumn] = $literal"
+		$chunkSql = "SELECT $columnList FROM $bracketed WHERE [$ChunkColumn] = $literal"
 		$transferParams = @{
 			Source				   = $Source
 			SourceDatabase		   = $SourceDatabase
@@ -341,27 +366,30 @@ function Invoke-sqmChunkedTableTransfer
 	Write-sqmTransferLog -Message $summaryMsg -FunctionName $functionName -Level 'INFO'
 	Write-Host $summaryMsg -ForegroundColor $(if ($failCount -gt 0) { 'Yellow' } else { 'Green' })
 
-	try
+	if (-not $NoReport)
 	{
-		$finalCompare = Compare-sqmTableRowCount -Source $Source -SourceDatabase $SourceDatabase `
-												   -Destination $Destination -DestinationDatabase $DestinationDatabase `
-												   -Table $Table -SourceCredential $srcCred -DestinationCredential $dstCred
+		try
+		{
+			$finalCompare = Compare-sqmTableRowCount -Source $Source -SourceDatabase $SourceDatabase `
+													   -Destination $Destination -DestinationDatabase $DestinationDatabase `
+													   -Table $Table -SourceCredential $srcCred -DestinationCredential $dstCred
 
-		if (-not (Test-Path $OutputPath)) { New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null }
-		$safeSource = "$Source.$SourceDatabase" -replace '[\\:.]', '_'
-		$safeDest = "$Destination.$DestinationDatabase" -replace '[\\:.]', '_'
-		$datestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-		$htmlFile = Join-Path $OutputPath "sqmDataTransfer_ChunkedTransferReport_${safeSource}_to_${safeDest}_${datestamp}.html"
+			if (-not (Test-Path $OutputPath)) { New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null }
+			$safeSource = "$Source.$SourceDatabase" -replace '[\\:.]', '_'
+			$safeDest = "$Destination.$DestinationDatabase" -replace '[\\:.]', '_'
+			$datestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+			$htmlFile = Join-Path $OutputPath "sqmDataTransfer_ChunkedTransferReport_${safeSource}_to_${safeDest}_${datestamp}.html"
 
-		Export-sqmTransferReport -Source $Source -SourceDatabase $SourceDatabase `
-								  -Destination $Destination -DestinationDatabase $DestinationDatabase `
-								  -Results $allResults -RowCounts $finalCompare -FilePath $htmlFile `
-								  -Title "sqmDataTransfer - Chunked Transferbericht ($qualified)" -NoOpen:$NoOpen
-	}
-	catch
-	{
-		Write-Warning (Get-sqmTransferString -Key 'InvokeTransfer.ReportFailed' -FormatArgs @($_.Exception.Message))
-		Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.ReportFailed' -FormatArgs @($_.Exception.Message)) -FunctionName $functionName -Level 'ERROR'
+			Export-sqmTransferReport -Source $Source -SourceDatabase $SourceDatabase `
+									  -Destination $Destination -DestinationDatabase $DestinationDatabase `
+									  -Results $allResults -RowCounts $finalCompare -FilePath $htmlFile `
+									  -Title "sqmDataTransfer - Chunked Transferbericht ($qualified)" -NoOpen:$NoOpen
+		}
+		catch
+		{
+			Write-Warning (Get-sqmTransferString -Key 'InvokeTransfer.ReportFailed' -FormatArgs @($_.Exception.Message))
+			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.ReportFailed' -FormatArgs @($_.Exception.Message)) -FunctionName $functionName -Level 'ERROR'
+		}
 	}
 
 	return $allResults
