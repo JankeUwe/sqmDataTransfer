@@ -403,6 +403,37 @@ function Invoke-sqmChunkedTableTransfer
 				continue
 			}
 
+			# --- Ein Chunk, der schon (falsche Anzahl) Zeilen auf dem Ziel hat, ist vermutlich der
+			# Rest eines mitten im Bulk-Copy unterbrochenen vorherigen Laufs (SqlBulkCopy-Batches sind
+			# atomar, aber der Chunk als Ganzes nicht). Ohne Primary/Unique Key auf der Zieltabelle
+			# wuerde ein einfaches Neukopieren diese Zeilen verdoppeln statt sie zu ersetzen - darum
+			# vor dem erneuten Kopieren geziehlt nur diesen einen Chunk leeren. Ein wirklich frischer,
+			# noch nie kopierter Chunk hat $dstCount = 0 und braucht das nicht (bei deaktivierten
+			# Indizes waere ein DELETE pro Chunk sonst ein teurer Full Scan on top jedes einzelnen
+			# Chunks - hier greift es nur fuer den (typischerweise hoechstens einen) tatsaechlich
+			# betroffenen Chunk).
+			if ($null -ne $dstCount -and $dstCount -gt 0)
+			{
+				$cleanupAction = "Vorhandene $dstCount Zeile(n) fuer Chunk $chunkLabel auf '$Destination'.'$DestinationDatabase'.$qualified loeschen (Rest eines vorherigen Laufs) vor erneutem Kopieren"
+				if ($PSCmdlet.ShouldProcess($Destination, $cleanupAction))
+				{
+					try
+					{
+						Invoke-DbaQuery @dstConnParams -Query "DELETE FROM $bracketed WHERE [$ChunkColumn] = $literal" -EnableException | Out-Null
+						Write-sqmTransferLog -Message $cleanupAction -FunctionName $functionName -Level 'WARNING'
+						$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = "$chunkValue"; Step = 'CleanPartialChunk'; Status = 'Success'; Message = "$dstCount Zeile(n) geloescht vor Neukopie."; Timestamp = (Get-Date) })
+					}
+					catch
+					{
+						$msg = "Konnte vorhandene Zeilen fuer Chunk $chunkLabel nicht loeschen: $($_.Exception.Message)"
+						$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = "$chunkValue"; Step = 'CleanPartialChunk'; Status = 'Failed'; Message = $msg; Timestamp = (Get-Date) })
+						Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
+						if ($EnableException -and -not $ContinueOnError) { throw }
+						continue
+					}
+				}
+			}
+
 			$chunkSql = "SELECT $columnList FROM $bracketed WHERE [$ChunkColumn] = $literal"
 			$transferParams = @{
 				Source				   = $Source
