@@ -172,42 +172,74 @@ function Copy-sqmTableData
 			}
 			if ($SourceCredential) { $copyParams['SqlCredential'] = $SourceCredential }
 			if ($DestinationCredential) { $copyParams['DestinationSqlCredential'] = $DestinationCredential }
-			if ($SourceQuery)
-			{
-				$copyParams['Query'] = $SourceQuery
-				# Copy-DbaDbTableData only builds real NAME-based SqlBulkCopy.ColumnMappings for a
-				# plain -Table copy; with -Query it leaves ColumnMappings empty by default and lets
-				# SqlBulkCopy fall back to its own implicit ORDINAL mapping against the destination's
-				# full physical column list (computed columns included in that count, even though
-				# they can never be written to) - a computed column anywhere before the end of the
-				# table silently shifts every later column by one position. -ForceExplicitMapping
-				# makes dbatools build the same real NAME-based mapping it already uses for -Table,
-				# immune to column order/computed-column position entirely. Verified against a real
-				# 108-column production table (FXUeberleitung.Ergebnis_agg) with a computed column at
-				# position 3 - reproduced the ordinal shift without this, gone with it.
-				$copyParams['ForceExplicitMapping'] = $true
-			}
 
-			# Verbose-Stream statt roher Textausgabe in eine Fortschrittsanzeige uebersetzen - dbatools
-			# meldet den kumulierten Zeilenstand alle -NotifyAfter Zeilen ueber genau diesen Kanal.
 			$progressActivity = Get-sqmTransferString -Key 'Copy.ProgressActivity' -FormatArgs @($t)
 			$copyResult = $null
-			try
+
+			if ($SourceQuery)
 			{
-				Copy-DbaDbTableData @copyParams 4>&1 | ForEach-Object {
-					if ($_ -is [System.Management.Automation.VerboseRecord])
-					{
-						if ($_.Message -match $rowsCopiedPattern)
-						{
-							Write-Progress -Id 2 -Activity $progressActivity -Status (Get-sqmTransferString -Key 'Copy.ProgressStatus' -FormatArgs @([int64]$Matches[1]))
-						}
+				# Copy-DbaDbTableData only builds real NAME-based SqlBulkCopy.ColumnMappings for a
+				# plain -Table copy. With -Query it leaves ColumnMappings empty unless the caller
+				# passes -ForceExplicitMapping - a parameter that doesn't exist in every dbatools
+				# version still in use (confirmed: present in 2.8.2, absent in 2.7.1). Without it,
+				# SqlBulkCopy falls back to its own implicit ORDINAL mapping against the destination's
+				# full physical column list (computed columns included in that count, even though
+				# they can never be written to) - a computed column anywhere before the end of the
+				# table silently shifts every later column by one position. Rather than depend on a
+				# specific dbatools version being installed everywhere this runs (including remote
+				# production hosts that are hard to update), Invoke-sqmDirectBulkCopy drives
+				# SqlBulkCopy directly with the same explicit NAME-based mapping, with no dbatools
+				# version dependency at all. Verified against a real 108-column production table
+				# (FXUeberleitung.Ergebnis_agg) with a computed column at position 3 - reproduced the
+				# ordinal shift without this, gone with it.
+				try
+				{
+					$directParams = @{
+						SqlInstance		    = $Source
+						Database		    = $SourceDatabase
+						Query			    = $SourceQuery
+						Destination		    = $Destination
+						DestinationDatabase = $DestinationDatabase
+						DestinationTable    = $targetTableName
+						Truncate		    = $Truncate.IsPresent
+						KeepIdentity	    = $KeepIdentity
+						KeepNulls		    = $KeepNulls
+						BatchSize		    = $BatchSize
+						BulkCopyTimeOut	    = $BulkCopyTimeOut
+						NotifyAfter		    = $NotifyAfter
+						ProgressActivity    = $progressActivity
+						Confirm			    = $false
 					}
-					else { $copyResult = $_ }
+					if ($SourceCredential) { $directParams['SqlCredential'] = $SourceCredential }
+					if ($DestinationCredential) { $directParams['DestinationSqlCredential'] = $DestinationCredential }
+					$copyResult = Invoke-sqmDirectBulkCopy @directParams
+				}
+				finally
+				{
+					Write-Progress -Id 2 -Activity $progressActivity -Completed
 				}
 			}
-			finally
+			else
 			{
-				Write-Progress -Id 2 -Activity $progressActivity -Completed
+				# Verbose-Stream statt roher Textausgabe in eine Fortschrittsanzeige uebersetzen -
+				# dbatools meldet den kumulierten Zeilenstand alle -NotifyAfter Zeilen genau darueber.
+				try
+				{
+					Copy-DbaDbTableData @copyParams 4>&1 | ForEach-Object {
+						if ($_ -is [System.Management.Automation.VerboseRecord])
+						{
+							if ($_.Message -match $rowsCopiedPattern)
+							{
+								Write-Progress -Id 2 -Activity $progressActivity -Status (Get-sqmTransferString -Key 'Copy.ProgressStatus' -FormatArgs @([int64]$Matches[1]))
+							}
+						}
+						else { $copyResult = $_ }
+					}
+				}
+				finally
+				{
+					Write-Progress -Id 2 -Activity $progressActivity -Completed
+				}
 			}
 			$rows = if ($copyResult -and $copyResult.RowsCopied) { [int64]$copyResult.RowsCopied } else { 0 }
 
