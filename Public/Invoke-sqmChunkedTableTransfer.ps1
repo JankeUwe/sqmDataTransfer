@@ -251,26 +251,65 @@ function Invoke-sqmChunkedTableTransfer
 	# treated the same as "table doesn't exist" - silently falling back to source-column-order in
 	# that case would reproduce the exact column-order-mismatch bug this function exists to avoid,
 	# with no trace of why. Let it fail loudly instead.
-	$dstColQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND is_computed = 0 ORDER BY column_id"
-	$dstColumnNames = @(Invoke-DbaQuery @dstConnParams -Query $dstColQuery -As PSObject -EnableException | Select-Object -ExpandProperty name)
+	# Full type info (not just name) is needed for missing-on-source columns below - a bare NULL
+	# placeholder doesn't carry the destination column's collation, which SqlBulkCopy checks even
+	# for a NULL literal ("locale id 0 of source column X and locale id 1033 of destination column
+	# X do not match" - same column name on both sides, still fails without an explicit CAST).
+	$dstColQuery = @"
+SELECT c.name, ty.name AS TypeName, c.max_length, c.precision, c.scale, c.collation_name
+FROM sys.columns c
+JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+WHERE c.object_id = OBJECT_ID(N'$bracketed') AND c.is_computed = 0
+ORDER BY c.column_id
+"@
+	$dstColumnInfo = @(Invoke-DbaQuery @dstConnParams -Query $dstColQuery -As PSObject -EnableException)
+	$dstColumnNames = @($dstColumnInfo | Select-Object -ExpandProperty name)
+
+	# Builds a properly-typed NULL placeholder for a destination column that has no source
+	# counterpart, e.g. CAST(NULL AS varchar(20)) COLLATE Latin1_General_CI_AS - matches the
+	# destination's actual type/size/collation so SqlBulkCopy accepts it positionally.
+	function Format-NullPlaceholder($col)
+	{
+		$sizedTypes = @('varchar', 'nvarchar', 'char', 'nchar', 'varbinary', 'binary')
+		$precisionTypes = @('decimal', 'numeric')
+		if ($col.TypeName -in $sizedTypes)
+		{
+			$isUnicode = $col.TypeName.StartsWith('n')
+			$len = if ($col.max_length -eq -1) { 'MAX' } elseif ($isUnicode) { [int]($col.max_length / 2) } else { $col.max_length }
+			$collate = if ($col.collation_name) { " COLLATE $($col.collation_name)" } else { '' }
+			return "CAST(NULL AS $($col.TypeName)($len))$collate"
+		}
+		if ($col.TypeName -in $precisionTypes)
+		{
+			return "CAST(NULL AS $($col.TypeName)($($col.precision),$($col.scale)))"
+		}
+		return "CAST(NULL AS $($col.TypeName))"
+	}
 
 	if ($dstColumnNames.Count -gt 0)
 	{
-		# Zieltabelle existiert bereits - deren Spaltenreihenfolge ist massgeblich. Nur Spalten
-		# verwenden, die auf BEIDEN Seiten existieren (per Name), damit eine echte Schema-Drift
-		# (fehlende/zusaetzliche Spalten) einen klaren Fehler statt einer verschobenen Zuordnung
-		# ergibt.
+		# Zieltabelle existiert bereits - deren Spaltenreihenfolge UND -ANZAHL ist massgeblich.
+		# -Query mappt rein ordinal gegen ALLE (nicht-berechneten) Zielspalten - dbatools kennt
+		# keine Namen, es zaehlt nur Position. Eine Zielspalte, die auf der Quelle fehlt, darf
+		# deshalb NICHT einfach aus der SELECT-Liste entfernt werden: das verschiebt jede
+		# nachfolgende Spalte um eine Position und erzeugt exakt die Art von "Spalte A landet in
+		# Spalte B"-Fehlzuordnung, die dieser ganze Namens-Abgleich eigentlich vermeiden soll (nur
+		# fuer eine Spalte GANZ AM ENDE waere Entfernen zufaellig folgenlos - deshalb ist ein
+		# frueherer Test mit genau diesem Fall irrefuehrend gewesen). Stattdessen wird an der
+		# fehlenden Position ein NULL-Platzhalter eingesetzt, analog zum von dbatools selbst
+		# dokumentierten Vorgehen fuer Identity-Spalten - Anzahl und Reihenfolge bleiben so exakt
+		# gleich der Zieltabelle, unabhaengig davon, welche Spalten auf der Quelle fehlen.
 		$srcSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$srcColumnNames, [System.StringComparer]::OrdinalIgnoreCase)
 		$dstSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$dstColumnNames, [System.StringComparer]::OrdinalIgnoreCase)
-		$columnNames = @($dstColumnNames | Where-Object { $srcSet.Contains($_) })
 		$missingOnSource = @($dstColumnNames | Where-Object { -not $srcSet.Contains($_) })
 		# Spalten, die nur auf der QUELLE existieren, wuerden sonst stillschweigend nie mitkopiert -
-		# im Unterschied zu $missingOnSource (Zielspalten ohne Quellentsprechung, unproblematisch,
-		# da fuer sie ohnehin keine Daten da sind) bedeutet das hier echten, unbemerkten Datenverlust.
+		# im Unterschied zu $missingOnSource (s.u., durch NULL-Platzhalter abgedeckt) bedeutet das
+		# hier echten, unbemerkten Datenverlust, weil fuer sie in der Zieltabelle gar keine Spalte
+		# (und damit kein Platzhalter-Slot) existiert.
 		$missingOnDestination = @($srcColumnNames | Where-Object { -not $dstSet.Contains($_) })
 		if ($missingOnSource.Count -gt 0)
 		{
-			$msg = "Spalte(n) nur auf Ziel vorhanden, werden bei $qualified uebersprungen: $($missingOnSource -join ', ')"
+			$msg = "Spalte(n) nur auf Ziel vorhanden, werden bei $qualified als NULL uebertragen (keine Quelldaten): $($missingOnSource -join ', ')"
 			Write-Warning $msg
 			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
 		}
@@ -280,19 +319,22 @@ function Invoke-sqmChunkedTableTransfer
 			Write-Warning $msg
 			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
 		}
+		$selectExpressions = @($dstColumnInfo | ForEach-Object {
+				if ($srcSet.Contains($_.name)) { "[$($_.name)]" } else { "$(Format-NullPlaceholder $_) AS [$($_.name)]" }
+			})
 	}
 	else
 	{
 		# Zieltabelle existiert noch nicht - wird gleich (per -ScriptMetadata im ersten Chunk) aus
-		# der Quelle erzeugt, Spaltenreihenfolge entspricht dann der Quelle.
-		$columnNames = $srcColumnNames
+		# der Quelle erzeugt, Spaltenreihenfolge entspricht dann der Quelle 1:1.
+		$selectExpressions = @($srcColumnNames | ForEach-Object { "[$_]" })
 	}
 
-	if ($columnNames.Count -eq 0)
+	if ($selectExpressions.Count -eq 0)
 	{
-		throw "Keine gemeinsamen (nicht-berechneten) Spalten zwischen Quelle und Ziel fuer $qualified gefunden."
+		throw "Keine Spalten fuer $qualified ermittelt."
 	}
-	$columnList = ($columnNames | ForEach-Object { "[$_]" }) -join ', '
+	$columnList = $selectExpressions -join ', '
 
 	$chunkQuery = "SELECT DISTINCT [$ChunkColumn] AS ChunkValue FROM $bracketed ORDER BY [$ChunkColumn]"
 	$chunkValues = @(Invoke-DbaQuery @srcConnParams -Query $chunkQuery -As PSObject -EnableException | Select-Object -ExpandProperty ChunkValue)
