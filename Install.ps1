@@ -148,11 +148,17 @@ if ($Scope -eq 'AllUsers') {
 # 4. Modul kopieren
 #    /COPY:DAT  -> Data, Attributes, Timestamps (KEIN Zone.Identifier-Strip!
 #                  das erledigt der Unblock-File-Schritt 5)
+#    /IS        -> "Include Same": kopiert auch Dateien, die robocopy per Timestamp+Groesse
+#                  als bereits identisch einstuft - reine Vorsichtsmassnahme (per Repro
+#                  bestaetigt: eine reine Timestamp-Uebereinstimmung bei UNTERSCHIEDLICHER
+#                  Groesse fuehrt bei robocopy schon ohne dieses Flag zuverlaessig zum
+#                  Kopieren; /IS deckt zusaetzlich den unwahrscheinlicheren Fall ab, dass
+#                  Groesse UND Timestamp zufaellig gleich sind).
 #    /XD .git   -> exclude git directory
 #    /XF        -> exclude meta files
 # ---------------------------------------------------------------------------
 Write-Host "Installing sqmDataTransfer to: $Destination" -ForegroundColor Cyan
-robocopy $Source $Destination /E /PURGE /NJH /NJS /NDL /COPY:DAT `
+robocopy $Source $Destination /E /PURGE /NJH /NJS /NDL /COPY:DAT /IS `
     /XD .git tests bin `
     /XF .gitignore README.md LICENSE `
           Install.cmd Install.ps1 `
