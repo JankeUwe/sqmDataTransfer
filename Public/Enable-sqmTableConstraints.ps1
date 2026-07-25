@@ -4,15 +4,16 @@
     transfer.
 
 .DESCRIPTION
-    For each table, detects currently disabled foreign keys and non-clustered indexes
-    (sys.foreign_keys / sys.indexes) and re-enables them - no state needs to be passed in from a
-    prior Disable-sqmTableConstraints call.
+    For each table, detects currently disabled foreign keys, non-clustered indexes and triggers
+    (sys.foreign_keys / sys.indexes / sys.triggers) and re-enables them - no state needs to be
+    passed in from a prior Disable-sqmTableConstraints call.
 
         - Foreign keys: ALTER TABLE ... WITH CHECK CHECK CONSTRAINT <name> (revalidates existing
           data by default) or WITH NOCHECK CHECK CONSTRAINT <name> when -Revalidate is $false
           (faster, but the constraint is then trusted without verifying the newly loaded rows).
         - Indexes: ALTER INDEX <name> ON <table> REBUILD (a disabled index has no valid ON/OFF
           switch - REBUILD is what SQL Server requires to bring it back online).
+        - Triggers: ENABLE TRIGGER <name> ON <table>.
 
 .PARAMETER SqlInstance
     Target SQL Server instance.
@@ -154,6 +155,45 @@ WHERE i.object_id = OBJECT_ID(N'[$schemaName].[$tableName]')
 			$msg = Get-sqmTransferString -Key 'Constraints.DisabledIdxQueryFailed' -FormatArgs @($qualified, $_.Exception.Message)
 			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
 			$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Index'; ObjectName = (Get-sqmTransferString -Key 'Common.All'); Action = 'Enable'; Status = "Failed: $($_.Exception.Message)" })
+		}
+
+		try
+		{
+			$trgQuery = @"
+SELECT tr.name AS TriggerName
+FROM sys.triggers tr
+WHERE tr.parent_id = OBJECT_ID(N'[$schemaName].[$tableName]')
+  AND tr.is_disabled = 1
+"@
+			$trgs = @(Invoke-DbaQuery @connParams -Query $trgQuery -As PSObject -EnableException)
+			foreach ($trg in $trgs)
+			{
+				$action = Get-sqmTransferString -Key 'Constraints.EnableTrgAction' -FormatArgs @($trg.TriggerName, $qualified)
+				if ($PSCmdlet.ShouldProcess($qualified, $action))
+				{
+					try
+					{
+						Invoke-DbaQuery @connParams -Query "ENABLE TRIGGER [$($trg.TriggerName)] ON [$schemaName].[$tableName]" -EnableException | Out-Null
+						$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Trigger'; ObjectName = $trg.TriggerName; Action = 'Enable'; Status = 'Success' })
+						Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.TrgEnabled' -FormatArgs @($trg.TriggerName, $qualified)) -FunctionName $functionName -Level 'INFO'
+					}
+					catch
+					{
+						$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Trigger'; ObjectName = $trg.TriggerName; Action = 'Enable'; Status = "Failed: $($_.Exception.Message)" })
+						Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.TrgEnableFailed' -FormatArgs @($trg.TriggerName, $qualified, $_.Exception.Message)) -FunctionName $functionName -Level 'ERROR'
+					}
+				}
+				else
+				{
+					$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Trigger'; ObjectName = $trg.TriggerName; Action = 'Enable'; Status = 'WhatIf' })
+				}
+			}
+		}
+		catch
+		{
+			$msg = Get-sqmTransferString -Key 'Constraints.DisabledTrgQueryFailed' -FormatArgs @($qualified, $_.Exception.Message)
+			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
+			$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Trigger'; ObjectName = (Get-sqmTransferString -Key 'Common.All'); Action = 'Enable'; Status = "Failed: $($_.Exception.Message)" })
 		}
 	}
 

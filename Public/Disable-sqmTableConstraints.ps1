@@ -9,6 +9,9 @@
           leaving other constraint types (CHECK, DEFAULT) untouched.
         - Non-clustered indexes are disabled individually (ALTER INDEX <name> ON <table> DISABLE).
           Clustered indexes are never disabled - disabling one makes the table inaccessible.
+        - DML triggers are disabled individually (DISABLE TRIGGER <name> ON <table>) - a trigger
+          firing per-row during a bulk copy (audit triggers etc.) would otherwise slow the load
+          and can misfire on batched/KeepIdentity inserts it wasn't written to expect.
     Already-disabled objects are skipped (reported as 'AlreadyDisabled') so this is safe to call
     repeatedly. Use Enable-sqmTableConstraints afterwards to reverse the effect - it re-detects
     the currently disabled objects, no state needs to be passed between the two calls.
@@ -30,6 +33,9 @@
 
 .PARAMETER IncludeIndexes
     Disable non-clustered indexes. Default: $true.
+
+.PARAMETER IncludeTriggers
+    Disable DML triggers. Default: $true.
 
 .PARAMETER Confirm
 .PARAMETER WhatIf
@@ -60,7 +66,9 @@ function Disable-sqmTableConstraints
 		[Parameter(Mandatory = $false)]
 		[bool]$IncludeForeignKeys = $true,
 		[Parameter(Mandatory = $false)]
-		[bool]$IncludeIndexes = $true
+		[bool]$IncludeIndexes = $true,
+		[Parameter(Mandatory = $false)]
+		[bool]$IncludeTriggers = $true
 	)
 
 	$functionName = $MyInvocation.MyCommand.Name
@@ -171,6 +179,52 @@ WHERE i.object_id = OBJECT_ID(N'[$schemaName].[$tableName]')
 				$msg = Get-sqmTransferString -Key 'Constraints.IdxQueryFailed' -FormatArgs @($qualified, $_.Exception.Message)
 				Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
 				$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Index'; ObjectName = (Get-sqmTransferString -Key 'Common.All'); Action = 'Disable'; Status = "Failed: $($_.Exception.Message)" })
+			}
+		}
+
+		if ($IncludeTriggers)
+		{
+			try
+			{
+				$trgQuery = @"
+SELECT tr.name AS TriggerName
+FROM sys.triggers tr
+WHERE tr.parent_id = OBJECT_ID(N'[$schemaName].[$tableName]')
+  AND tr.is_disabled = 0
+"@
+				$trgs = @(Invoke-DbaQuery @connParams -Query $trgQuery -As PSObject -EnableException)
+				foreach ($trg in $trgs)
+				{
+					$action = Get-sqmTransferString -Key 'Constraints.DisableTrgAction' -FormatArgs @($trg.TriggerName, $qualified)
+					if ($PSCmdlet.ShouldProcess($qualified, $action))
+					{
+						try
+						{
+							Invoke-DbaQuery @connParams -Query "DISABLE TRIGGER [$($trg.TriggerName)] ON [$schemaName].[$tableName]" -EnableException | Out-Null
+							$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Trigger'; ObjectName = $trg.TriggerName; Action = 'Disable'; Status = 'Success' })
+							Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.TrgDisabled' -FormatArgs @($trg.TriggerName, $qualified)) -FunctionName $functionName -Level 'INFO'
+						}
+						catch
+						{
+							$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Trigger'; ObjectName = $trg.TriggerName; Action = 'Disable'; Status = "Failed: $($_.Exception.Message)" })
+							Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.TrgDisableFailed' -FormatArgs @($trg.TriggerName, $qualified, $_.Exception.Message)) -FunctionName $functionName -Level 'ERROR'
+						}
+					}
+					else
+					{
+						$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Trigger'; ObjectName = $trg.TriggerName; Action = 'Disable'; Status = 'WhatIf' })
+					}
+				}
+				if ($trgs.Count -eq 0)
+				{
+					Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.NoActiveTriggers' -FormatArgs @($qualified)) -FunctionName $functionName -Level 'INFO'
+				}
+			}
+			catch
+			{
+				$msg = Get-sqmTransferString -Key 'Constraints.TrgQueryFailed' -FormatArgs @($qualified, $_.Exception.Message)
+				Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'ERROR'
+				$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Trigger'; ObjectName = (Get-sqmTransferString -Key 'Common.All'); Action = 'Disable'; Status = "Failed: $($_.Exception.Message)" })
 			}
 		}
 	}

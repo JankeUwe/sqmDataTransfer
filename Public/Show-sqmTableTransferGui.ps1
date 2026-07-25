@@ -481,7 +481,14 @@ function Show-sqmTableTransferGui
 	$numBatch.BackColor = $cWindow
 	$numBatch.ForeColor = $cText
 
-	$grpOpt.Controls.AddRange(@($chkScriptMeta, $chkFks, $chkIdx, $chkKeepIdentity, $chkTruncate, $chkRevalidate, $chkWhatIf, $chkSkipCompleted, $lblBatch, $numBatch))
+	$chkTriggers = New-Object System.Windows.Forms.CheckBox
+	$chkTriggers.Text = Get-sqmTransferString -Key 'Gui.ToggleTriggers'
+	$chkTriggers.ForeColor = $cText
+	$chkTriggers.Checked = $true
+	$chkTriggers.Location = New-Object System.Drawing.Point(740, 75)
+	$chkTriggers.Size = New-Object System.Drawing.Size(185, 22)
+
+	$grpOpt.Controls.AddRange(@($chkScriptMeta, $chkFks, $chkIdx, $chkTriggers, $chkKeepIdentity, $chkTruncate, $chkRevalidate, $chkWhatIf, $chkSkipCompleted, $lblBatch, $numBatch))
 	$form.Controls.Add($grpOpt)
 
 	# --- HTML report options -----------------------------------------------------
@@ -630,7 +637,8 @@ function Show-sqmTableTransferGui
 					SkipCompleted	      = $chkSkipCompleted.Checked
 					IncludeForeignKeys    = $chkFks.Checked
 					IncludeIndexes	      = $chkIdx.Checked
-					SkipConstraintHandling = (-not $chkFks.Checked -and -not $chkIdx.Checked)
+					IncludeTriggers	      = $chkTriggers.Checked
+					SkipConstraintHandling = (-not $chkFks.Checked -and -not $chkIdx.Checked -and -not $chkTriggers.Checked)
 					RevalidateForeignKeys = $chkRevalidate.Checked
 					Truncate			  = $chkTruncate.Checked
 					KeepIdentity	      = $chkKeepIdentity.Checked

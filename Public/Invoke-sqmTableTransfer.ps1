@@ -6,12 +6,12 @@
     For each table, runs the following sequence:
         1. Optional: script the table's metadata from the source and create it on the target if
            it doesn't already exist yet (-ScriptMetadata).
-        2. Disable foreign keys and non-clustered indexes on the target table
+        2. Disable foreign keys, non-clustered indexes and triggers on the target table
            (unless -SkipConstraintHandling).
         3. Copy the data (Copy-sqmTableData).
         4. Compare row counts between source and target (Compare-sqmTableRowCount).
-        5. Re-enable foreign keys and indexes on the target table - guaranteed via a finally
-           block scoped around steps 2-4, even if an earlier step in that window throws.
+        5. Re-enable foreign keys, indexes and triggers on the target table - guaranteed via a
+           finally block scoped around steps 2-4, even if an earlier step in that window throws.
     Every step is logged (Write-sqmTransferLog) and reported in the returned result list.
     Continues with the next table on error unless -EnableException is set.
 
@@ -58,8 +58,12 @@
 .PARAMETER IncludeIndexes
     Include indexes in metadata scripting and in the disable/enable handling. Default: $true.
 
+.PARAMETER IncludeTriggers
+    Disable DML triggers on the target table before the copy and re-enable them afterwards.
+    Default: $true. Not part of -ScriptMetadata (Export-sqmTableSchema never scripts triggers).
+
 .PARAMETER SkipConstraintHandling
-    Skip disabling/re-enabling foreign keys and indexes entirely.
+    Skip disabling/re-enabling foreign keys, indexes and triggers entirely.
 
 .PARAMETER RevalidateForeignKeys
     Revalidate foreign key data when re-enabling (WITH CHECK). Default: $true.
@@ -99,9 +103,9 @@
 .EXAMPLE
     Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales -Destination SQL02 -DestinationDatabase Sales -Table Orders,Customers -ScriptMetadata -Truncate
 
-    Scripts and creates missing tables on the target, disables FKs/indexes, copies data, compares
-    row counts and re-enables FKs/indexes for both tables. Writes and opens the HTML report from
-    the default OutputPath.
+    Scripts and creates missing tables on the target, disables FKs/indexes/triggers, copies data,
+    compares row counts and re-enables FKs/indexes/triggers for both tables. Writes and opens the
+    HTML report from the default OutputPath.
 
 .EXAMPLE
     Invoke-sqmTableTransfer -Source SQL01 -SourceDatabase Sales -Destination SQL02 -DestinationDatabase Sales -Table Orders -WhatIf
@@ -151,6 +155,8 @@ function Invoke-sqmTableTransfer
 		[bool]$IncludeForeignKeys = $true,
 		[Parameter(Mandatory = $false)]
 		[bool]$IncludeIndexes = $true,
+		[Parameter(Mandatory = $false)]
+		[bool]$IncludeTriggers = $true,
 		[Parameter(Mandatory = $false)]
 		[switch]$SkipConstraintHandling,
 		[Parameter(Mandatory = $false)]
@@ -349,6 +355,7 @@ function Invoke-sqmTableTransfer
 						$disableResults = Disable-sqmTableConstraints -SqlInstance $Destination -Database $DestinationDatabase `
 																	   -Table $t -SqlCredential $dstCred `
 																	   -IncludeForeignKeys $IncludeForeignKeys -IncludeIndexes $IncludeIndexes `
+																	   -IncludeTriggers $IncludeTriggers `
 																	   -Confirm:$false
 						$constraintsWereDisabled = $true
 						$disableFailCount = @($disableResults | Where-Object Status -like 'Failed*').Count
