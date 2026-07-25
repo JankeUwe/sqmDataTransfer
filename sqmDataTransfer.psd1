@@ -79,6 +79,7 @@
 		'Compare-sqmDatabaseRowCount',
 		'Sync-sqmTableData',
 		'Invoke-sqmTableTransfer',
+		'Invoke-sqmChunkedTableTransfer',
 		'Show-sqmTableTransferGui'
 	)
 

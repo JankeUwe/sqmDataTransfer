@@ -116,6 +116,7 @@ and this is the one step that actually touches data, scoped to just the tables t
 | Function | Purpose |
 |---|---|
 | `Invoke-sqmTableTransfer` | Main entry point - orchestrates the full sequence above. |
+| `Invoke-sqmChunkedTableTransfer` | Transfers one large table in independently retryable chunks (one distinct value of a chunk column at a time) - for tables without a primary/unique key where a single interrupted all-or-nothing copy can't be safely resumed. |
 | `Export-sqmTableSchema` | Scripts table DDL from a source instance (SMO Scripter). |
 | `New-sqmTableFromScript` | Executes scripted DDL batches against a target instance. |
 | `Copy-sqmTableSchema` | Convenience wrapper: export + create in one call. |

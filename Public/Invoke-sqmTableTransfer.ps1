@@ -30,6 +30,13 @@
 .PARAMETER Table
     One or more table names to transfer ('Table' or 'schema.Table').
 
+.PARAMETER SourceQuery
+    Custom SELECT to use as the row source for the data copy instead of the whole table (passed
+    through to Copy-sqmTableData -SourceQuery / Copy-DbaDbTableData -Query). Only valid when
+    -Table specifies exactly one table. Use SELECT * with a WHERE clause - columns are mapped by
+    ordinal position, not by name. For splitting a very large table into chunks, prefer
+    Invoke-sqmChunkedTableTransfer, which builds and loops this automatically.
+
 .PARAMETER SqlCredential
     Optional PSCredential for both instances. For different credentials use
     -SourceCredential / -DestinationCredential.
@@ -149,6 +156,8 @@ function Invoke-sqmTableTransfer
 		[Parameter(Mandatory = $true)]
 		[string[]]$Table,
 		[Parameter(Mandatory = $false)]
+		[string]$SourceQuery,
+		[Parameter(Mandatory = $false)]
 		[System.Management.Automation.PSCredential]$SqlCredential,
 		[Parameter(Mandatory = $false)]
 		[System.Management.Automation.PSCredential]$SourceCredential,
@@ -191,6 +200,11 @@ function Invoke-sqmTableTransfer
 	begin
 	{
 		$functionName = $MyInvocation.MyCommand.Name
+
+		if ($SourceQuery -and @($Table).Count -gt 1)
+		{
+			throw "-SourceQuery kann nur zusammen mit genau einer Tabelle in -Table verwendet werden."
+		}
 
 		$srcCred = if ($SourceCredential) { $SourceCredential } elseif ($SqlCredential) { $SqlCredential } else { $null }
 		$dstCred = if ($DestinationCredential) { $DestinationCredential } elseif ($SqlCredential) { $SqlCredential } else { $null }
@@ -384,7 +398,7 @@ function Invoke-sqmTableTransfer
 				# --- Daten kopieren ---
 				$copyResults = Copy-sqmTableData -Source $Source -SourceDatabase $SourceDatabase `
 												  -Destination $Destination -DestinationDatabase $DestinationDatabase `
-												  -Table $t -SourceCredential $srcCred -DestinationCredential $dstCred `
+												  -Table $t -SourceQuery $SourceQuery -SourceCredential $srcCred -DestinationCredential $dstCred `
 												  -Truncate:$Truncate -KeepIdentity $KeepIdentity -KeepNulls $KeepNulls `
 												  -BatchSize $BatchSize -ContinueOnError:$ContinueOnError -EnableException:$EnableException `
 												  -Confirm:$false -WhatIf:$WhatIfPreference

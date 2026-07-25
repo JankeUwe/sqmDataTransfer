@@ -26,6 +26,14 @@
 .PARAMETER DestinationTable
     Overrides the target table name. Only valid when -Table specifies exactly one table.
 
+.PARAMETER SourceQuery
+    Custom SELECT to use as the row source instead of the whole table (passed through to
+    Copy-DbaDbTableData -Query). Only valid when -Table specifies exactly one table (still
+    required for destination metadata). Use SELECT * with a WHERE clause to keep column order
+    intact - columns are mapped by ordinal position, not by name. Intended for splitting a very
+    large table into independently retryable chunks (e.g. by date range) - see
+    Invoke-sqmChunkedTableTransfer, which builds this automatically.
+
 .PARAMETER SourceCredential
     Optional PSCredential for the source instance.
 
@@ -85,6 +93,8 @@ function Copy-sqmTableData
 		[Parameter(Mandatory = $false)]
 		[string]$DestinationTable,
 		[Parameter(Mandatory = $false)]
+		[string]$SourceQuery,
+		[Parameter(Mandatory = $false)]
 		[System.Management.Automation.PSCredential]$SourceCredential,
 		[Parameter(Mandatory = $false)]
 		[System.Management.Automation.PSCredential]$DestinationCredential,
@@ -111,6 +121,10 @@ function Copy-sqmTableData
 	if ($DestinationTable -and @($Table).Count -gt 1)
 	{
 		throw "-DestinationTable kann nur zusammen mit genau einer Tabelle in -Table verwendet werden."
+	}
+	if ($SourceQuery -and @($Table).Count -gt 1)
+	{
+		throw "-SourceQuery kann nur zusammen mit genau einer Tabelle in -Table verwendet werden."
 	}
 
 	if (-not $PSBoundParameters.ContainsKey('BatchSize'))
@@ -158,6 +172,7 @@ function Copy-sqmTableData
 			}
 			if ($SourceCredential) { $copyParams['SqlCredential'] = $SourceCredential }
 			if ($DestinationCredential) { $copyParams['DestinationSqlCredential'] = $DestinationCredential }
+			if ($SourceQuery) { $copyParams['Query'] = $SourceQuery }
 
 			# Verbose-Stream statt roher Textausgabe in eine Fortschrittsanzeige uebersetzen - dbatools
 			# meldet den kumulierten Zeilenstand alle -NotifyAfter Zeilen ueber genau diesen Kanal.
