@@ -523,9 +523,12 @@ function Invoke-sqmChunkedTableTransfer
 	{
 		try
 		{
+			# -Fast: der Lauf ist an dieser Stelle fertig (alle Chunks abgearbeitet), also kein Risiko
+			# eines "dirty reads" auf eine noch laufende Bulk-Copy - sys.dm_db_partition_stats statt
+			# COUNT_BIG(*) spart bei einer 300+ Mio. Zeilen Tabelle einen kompletten Scan.
 			$finalCompare = Compare-sqmTableRowCount -Source $Source -SourceDatabase $SourceDatabase `
 													   -Destination $Destination -DestinationDatabase $DestinationDatabase `
-													   -Table $Table -SourceCredential $srcCred -DestinationCredential $dstCred
+													   -Table $Table -SourceCredential $srcCred -DestinationCredential $dstCred -Fast
 
 			if (-not (Test-Path $OutputPath)) { New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null }
 			$safeSource = "$Source.$SourceDatabase" -replace '[\\:.]', '_'

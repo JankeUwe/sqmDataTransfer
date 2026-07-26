@@ -32,6 +32,18 @@
 .PARAMETER DestinationCredential
     Optional PSCredential for the target instance.
 
+.PARAMETER Fast
+    Read row counts from sys.dm_db_partition_stats (SUM(rows) WHERE index_id IN (0,1)) instead of
+    SELECT COUNT_BIG(*). A metadata lookup instead of a table/index scan - on a table with hundreds
+    of millions of rows this is the difference between instant and a scan that can take minutes.
+    The counter is exact (SQL Server maintains it transactionally on every INSERT/DELETE, unlike
+    query-optimizer statistics), but it is not a locked/consistent snapshot: reading it while a
+    load is actively in progress on that table can reflect not-yet-committed rows. Only use this
+    for a comparison taken once a load has fully finished - not while it is still running (see
+    Invoke-sqmChunkedTableTransfer's per-chunk skip-check, which needs a WHERE-filtered exact count
+    this DMV cannot provide anyway, and keeps using COUNT_BIG(*) for that reason regardless of
+    this switch). Requires VIEW DATABASE STATE (or VIEW SERVER STATE on older versions) permission.
+
 .EXAMPLE
     Compare-sqmTableRowCount -Source SQL01 -SourceDatabase Sales -Destination SQL02 -DestinationDatabase Sales -Table Orders,Customers
 
@@ -58,7 +70,9 @@ function Compare-sqmTableRowCount
 		[Parameter(Mandatory = $false)]
 		[System.Management.Automation.PSCredential]$SourceCredential,
 		[Parameter(Mandatory = $false)]
-		[System.Management.Automation.PSCredential]$DestinationCredential
+		[System.Management.Automation.PSCredential]$DestinationCredential,
+		[Parameter(Mandatory = $false)]
+		[switch]$Fast
 	)
 
 	$functionName = $MyInvocation.MyCommand.Name
@@ -91,9 +105,21 @@ function Compare-sqmTableRowCount
 		$dstCount = $null
 		$errMsg = $null
 
+		# --- Metadaten-Zaehler statt Scan: sys.dm_db_partition_stats.row_count wird von SQL Server
+		# transaktional bei jedem INSERT/DELETE mitgefuehrt (exakt, keine Schaetzung) - ein Lookup
+		# statt eines vollen Table-/Index-Scans. index_id IN (0,1) = Heap bzw. Clustered Index,
+		# genau einer davon existiert immer; ohne diesen Filter wuerden zusaetzlich vorhandene
+		# Non-Clustered-Indizes mitgezaehlt und die Summe vervielfachen. OBJECT_ID() = NULL (Tabelle
+		# existiert nicht) liefert null Zeilen -> SUM(row_count) kommt als NULL zurueck, wird unten
+		# wie eine fehlgeschlagene Abfrage behandelt statt faelschlich als "0 Zeilen" interpretiert.
+		$srcQuery = if ($Fast) { "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$schemaName].[$tableName]') AND index_id IN (0, 1)" } else { "SELECT COUNT_BIG(*) AS [RowCount] FROM [$schemaName].[$tableName]" }
+		$dstQuery = if ($Fast) { "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$dstSchemaName].[$dstTableName]') AND index_id IN (0, 1)" } else { "SELECT COUNT_BIG(*) AS [RowCount] FROM [$dstSchemaName].[$dstTableName]" }
+
 		try
 		{
-			$srcCount = [int64](Invoke-DbaQuery @srcConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM [$schemaName].[$tableName]" -As PSObject -EnableException).RowCount
+			$srcRaw = (Invoke-DbaQuery @srcConnParams -Query $srcQuery -As PSObject -EnableException).RowCount
+			if ($null -eq $srcRaw) { throw "Tabelle [$schemaName].[$tableName] auf '$Source'.'$SourceDatabase' nicht gefunden." }
+			$srcCount = [int64]$srcRaw
 		}
 		catch
 		{
@@ -102,7 +128,9 @@ function Compare-sqmTableRowCount
 
 		try
 		{
-			$dstCount = [int64](Invoke-DbaQuery @dstConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM [$dstSchemaName].[$dstTableName]" -As PSObject -EnableException).RowCount
+			$dstRaw = (Invoke-DbaQuery @dstConnParams -Query $dstQuery -As PSObject -EnableException).RowCount
+			if ($null -eq $dstRaw) { throw "Tabelle [$dstSchemaName].[$dstTableName] auf '$Destination'.'$DestinationDatabase' nicht gefunden." }
+			$dstCount = [int64]$dstRaw
 		}
 		catch
 		{
