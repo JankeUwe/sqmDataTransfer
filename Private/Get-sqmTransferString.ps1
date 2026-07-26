@@ -192,6 +192,8 @@ $script:sqmtStrings = @{
 		'Gui.ReportPerRun'          = 'Bericht pro Lauf erzeugen'
 		'Gui.CompareAllButton'      = 'Gesamt-Bericht'
 		'Gui.VerifyMismatches'      = 'Abweichungen exakt pruefen (COUNT, kann dauern)'
+		'Gui.LargeTableWarningIntro'    = 'Folgende Tabelle(n) sind sehr gross und wuerden ohne Chunking (als einzelner All-or-nothing-Copy) uebertragen:'
+		'Gui.LargeTableWarningQuestion' = 'Trotzdem mit dem normalen Transfer fortfahren? (Nein = abbrechen, um stattdessen den vorgeschlagenen Befehl in PowerShell zu nutzen)'
 		'Gui.CompareAllRunning'     = 'Vergleiche alle Tabellen...'
 		'Gui.CompareAllDone'        = '{0} Tabelle(n) verglichen, {1} noch nicht vollstaendig.'
 		'Gui.CompareAllError'       = "Gesamtvergleich fehlgeschlagen:`n{0}"
@@ -364,6 +366,8 @@ $script:sqmtStrings = @{
 		'Gui.ReportPerRun'          = 'Generate report per run'
 		'Gui.CompareAllButton'      = 'Overall report'
 		'Gui.VerifyMismatches'      = 'Verify mismatches exactly (COUNT, can take a while)'
+		'Gui.LargeTableWarningIntro'    = 'The following table(s) are very large and would be transferred without chunking (as a single all-or-nothing copy):'
+		'Gui.LargeTableWarningQuestion' = 'Continue with the normal transfer anyway? (No = cancel, to use the suggested command in PowerShell instead)'
 		'Gui.CompareAllRunning'     = 'Comparing all tables...'
 		'Gui.CompareAllDone'        = '{0} table(s) compared, {1} still incomplete.'
 		'Gui.CompareAllError'       = "Overall comparison failed:`n{0}"

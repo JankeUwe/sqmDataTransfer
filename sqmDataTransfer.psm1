@@ -18,6 +18,10 @@ $script:sqmtModuleConfig = @{
 	TrustServerCertificate = $true
 	# Standard-Batchgroesse fuer Copy-sqmTableData (Copy-DbaDbTableData -BatchSize).
 	DefaultBatchSize       = 200000
+	# Ab dieser Quell-Zeilenzahl warnt Invoke-sqmTableTransfer (nicht-chunked Aufruf) mit einem
+	# fertigen Invoke-sqmChunkedTableTransfer-Befehlsvorschlag statt die Tabelle stillschweigend
+	# als einzelnen All-or-nothing-Copy zu behandeln.
+	LargeTableRowThreshold = 10000000
 }
 
 # Aktuelle Version aus der Manifestdatei lesen

@@ -759,6 +759,43 @@ function Show-sqmTableTransferGui
 				return
 			}
 
+			$srcCred = Get-CredentialFromPanel $srcPanel
+			$dstCred = Get-CredentialFromPanel $dstPanel
+
+			# Grosse-Tabelle-Vorabpruefung: Invoke-sqmTableTransfer warnt zwar selbst (siehe dort),
+			# aber erst NACH dem Transfer - hier VOR dem Start, damit man noch abbrechen und
+			# stattdessen den vorgeschlagenen Invoke-sqmChunkedTableTransfer-Befehl in PowerShell
+			# nutzen kann (die GUI selbst kann nicht chunken). Metadaten-Lookup pro ausgewaehlter
+			# Tabelle, kein Scan - eine fehlgeschlagene Pruefung darf den Transfer nicht verhindern.
+			try
+			{
+				$largeThreshold = Get-sqmTransferConfig -Key 'LargeTableRowThreshold'
+				if (-not $largeThreshold) { $largeThreshold = 10000000 }
+				$largeTableMessages = [System.Collections.Generic.List[string]]::new()
+				foreach ($t in $selectedTables)
+				{
+					$schemaNameChk = 'dbo'; $tableNameChk = $t
+					if ($t -match '^(?<schema>[^.]+)\.(?<name>.+)$') { $schemaNameChk = $Matches['schema']; $tableNameChk = $Matches['name'] }
+					$sizeParams = @{ SqlInstance = $srcPanel.Instance.Text; Database = $srcPanel.Database.Text; ErrorAction = 'Stop' }
+					if ($srcCred) { $sizeParams['SqlCredential'] = $srcCred }
+					$rc = (Invoke-DbaQuery @sizeParams -Query "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$schemaNameChk].[$tableNameChk]') AND index_id IN (0, 1)" -As PSObject -EnableException).RowCount
+					if ($null -ne $rc -and [int64]$rc -gt $largeThreshold)
+					{
+						$suggestedCol = Get-sqmSuggestedChunkColumn -SqlInstance $srcPanel.Instance.Text -Database $srcPanel.Database.Text -Table $t -SqlCredential $srcCred
+						$colText = if ($suggestedCol) { $suggestedCol } else { '<ChunkSpalte>' }
+						$cmdText = "Invoke-sqmChunkedTableTransfer -Source '$($srcPanel.Instance.Text)' -SourceDatabase '$($srcPanel.Database.Text)' -Destination '$($dstPanel.Instance.Text)' -DestinationDatabase '$($dstPanel.Database.Text)' -Table '$t' -ChunkColumn '$colText'"
+						$largeTableMessages.Add("$t ($('{0:N0}' -f [int64]$rc) Zeilen):`r`n$cmdText")
+					}
+				}
+				if ($largeTableMessages.Count -gt 0)
+				{
+					$msgBody = (Get-sqmTransferString -Key 'Gui.LargeTableWarningIntro') + "`r`n`r`n" + ($largeTableMessages -join "`r`n`r`n") + "`r`n`r`n" + (Get-sqmTransferString -Key 'Gui.LargeTableWarningQuestion')
+					$answer = [System.Windows.Forms.MessageBox]::Show($msgBody, (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'YesNo', 'Warning')
+					if ($answer -eq [System.Windows.Forms.DialogResult]::No) { return }
+				}
+			}
+			catch { }
+
 			$btnRun.Enabled = $false
 			$lblStatus.Text = Get-sqmTransferString -Key 'Gui.TransferRunning'
 			$txtLog.Clear()
@@ -791,8 +828,6 @@ function Show-sqmTableTransferGui
 				if ($txtReportPath.Text) { $params['OutputPath'] = $txtReportPath.Text }
 				$params['NoOpen'] = $chkNoOpen.Checked
 				$params['NoReport'] = -not $chkReportPerRun.Checked
-				$srcCred = Get-CredentialFromPanel $srcPanel
-				$dstCred = Get-CredentialFromPanel $dstPanel
 				if ($srcCred) { $params['SourceCredential'] = $srcCred }
 				if ($dstCred) { $params['DestinationCredential'] = $dstCred }
 

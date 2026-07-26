@@ -4,6 +4,14 @@
 
 .DESCRIPTION
     For each table, runs the following sequence:
+        0. If the source row count (sys.dm_db_partition_stats - metadata, no scan) exceeds
+           -Key 'LargeTableRowThreshold' (Get-sqmTransferConfig, default 10,000,000) and this is a
+           plain call (not already a chunk-scoped -SourceQuery call from
+           Invoke-sqmChunkedTableTransfer itself), warns and suggests a ready-to-use
+           Invoke-sqmChunkedTableTransfer command instead of silently doing an all-or-nothing
+           copy - including a plausible -ChunkColumn guess from Get-sqmSuggestedChunkColumn (a
+           date-typed column, picked by naming convention, not verified by an actual distinct-
+           value count). Does not block the transfer; logged as Step 'LargeTableWarning'.
         1. Optional: script the table's metadata from the source and create it on the target if
            it doesn't already exist yet (-ScriptMetadata).
         2. Disable foreign keys, non-clustered indexes and triggers on the target table
@@ -310,6 +318,39 @@ function Invoke-sqmTableTransfer
 							-PercentComplete ([math]::Floor((($tableIndex - 1) / [math]::Max($tableTotal, 1)) * 100))
 
 			Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'InvokeTransfer.ProcessingTable' -FormatArgs @($t)) -FunctionName $functionName -Level 'INFO'
+
+			# ------------------------------------------------------------------
+			# 0. Grosse-Tabelle-Warnung - nur bei einem normalen Aufruf, nicht wenn dies bereits ein
+			#    chunk-scoped Aufruf mit -SourceQuery ist (z.B. aus Invoke-sqmChunkedTableTransfer
+			#    selbst, das wuerde sich sonst pro Chunk selbst warnen). Metadaten-Lookup, kein Scan
+			#    - eine fehlgeschlagene Pruefung darf den eigentlichen Transfer nicht verhindern.
+			# ------------------------------------------------------------------
+			if (-not $SourceQuery)
+			{
+				try
+				{
+					$largeThreshold = Get-sqmTransferConfig -Key 'LargeTableRowThreshold'
+					if (-not $largeThreshold) { $largeThreshold = 10000000 }
+					$schemaNameChk = 'dbo'; $tableNameChk = $t
+					if ($t -match '^(?<schema>[^.]+)\.(?<name>.+)$') { $schemaNameChk = $Matches['schema']; $tableNameChk = $Matches['name'] }
+					$sizeQueryParams = @{ SqlInstance = $Source; Database = $SourceDatabase; ErrorAction = 'Stop' }
+					if ($srcCred) { $sizeQueryParams['SqlCredential'] = $srcCred }
+					$rcRaw = (Invoke-DbaQuery @sizeQueryParams -Query "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$schemaNameChk].[$tableNameChk]') AND index_id IN (0, 1)" -As PSObject -EnableException).RowCount
+
+					if ($null -ne $rcRaw -and [int64]$rcRaw -gt $largeThreshold)
+					{
+						$suggestedCol = Get-sqmSuggestedChunkColumn -SqlInstance $Source -Database $SourceDatabase -Table $t -SqlCredential $srcCred
+						$colText = if ($suggestedCol) { $suggestedCol } else { '<ChunkSpalte>' }
+						$suggestedCmd = "Invoke-sqmChunkedTableTransfer -Source '$Source' -SourceDatabase '$SourceDatabase' -Destination '$Destination' -DestinationDatabase '$DestinationDatabase' -Table '$t' -ChunkColumn '$colText'"
+						$colNote = if ($suggestedCol) { "Vorgeschlagene ChunkColumn (Datumsspalte, ungeprueft): '$suggestedCol'." } else { 'Keine Datumsspalte gefunden - ChunkColumn manuell waehlen.' }
+						$msg = "Tabelle $t hat $('{0:N0}' -f [int64]$rcRaw) Zeilen (Schwellwert: $('{0:N0}' -f $largeThreshold)) - wird als einzelner All-or-nothing-Copy uebertragen. $colNote Statt dessen erwaegen: $suggestedCmd"
+						Write-Warning $msg
+						Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
+						_AddResult $t 'LargeTableWarning' 'Warning' $msg
+					}
+				}
+				catch { }
+			}
 
 			# ------------------------------------------------------------------
 			# 1. Metadaten scripten + auf Ziel anlegen (falls noch nicht vorhanden)

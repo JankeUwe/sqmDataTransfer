@@ -20,6 +20,11 @@
 .PARAMETER DefaultBatchSize
     Default -BatchSize passed to Copy-DbaDbTableData by Copy-sqmTableData.
 
+.PARAMETER LargeTableRowThreshold
+    Row-count threshold above which Invoke-sqmTableTransfer (a plain, non-chunked call) warns and
+    suggests an Invoke-sqmChunkedTableTransfer command instead of silently doing an all-or-nothing
+    copy. Default: 10,000,000.
+
 .PARAMETER PassThru
     Returns the updated configuration as an object.
 
@@ -42,6 +47,9 @@ function Set-sqmTransferConfig
 		[Parameter(Mandatory = $false)]
 		[ValidateRange(1, 1000000)]
 		[int]$DefaultBatchSize,
+		[Parameter(Mandatory = $false)]
+		[ValidateRange(1, [int]::MaxValue)]
+		[int]$LargeTableRowThreshold,
 		[Parameter(Mandatory = $false)]
 		[switch]$PassThru
 	)
@@ -110,6 +118,14 @@ function Set-sqmTransferConfig
 		if ($PSCmdlet.ShouldProcess('sqmtModuleConfig', "DefaultBatchSize = $DefaultBatchSize"))
 		{
 			$globalConfig['DefaultBatchSize'] = $DefaultBatchSize
+			$updated = $true
+		}
+	}
+	if ($PSBoundParameters.ContainsKey('LargeTableRowThreshold'))
+	{
+		if ($PSCmdlet.ShouldProcess('sqmtModuleConfig', "LargeTableRowThreshold = $LargeTableRowThreshold"))
+		{
+			$globalConfig['LargeTableRowThreshold'] = $LargeTableRowThreshold
 			$updated = $true
 		}
 	}
