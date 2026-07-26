@@ -510,8 +510,13 @@ function Show-sqmTableTransferGui
 				$cred = Get-CredentialFromPanel $srcPanel
 				$connParams = @{ SqlInstance = $srcPanel.Instance.Text; Database = $srcPanel.Database.Text; ErrorAction = 'Stop' }
 				if ($cred) { $connParams['SqlCredential'] = $cred }
-				$q = "SELECT COUNT_BIG(*) AS [RowCount] FROM [$($parts[0])].[$($parts[1])]"
+				# sys.dm_db_partition_stats statt COUNT_BIG(*) - Metadaten-Lookup statt Scan, siehe
+				# Compare-sqmTableRowCount -Fast. Hier vor dem eigentlichen Transfer (Checkbox-Klick
+				# zum Auswaehlen einer Tabelle), also kein aktiver Schreibvorgang, der den Zaehler
+				# verfaelschen koennte. index_id IN (0,1) = Heap bzw. Clustered Index.
+				$q = "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$($parts[0])].[$($parts[1])]') AND index_id IN (0, 1)"
 				$cnt = (Invoke-DbaQuery @connParams -Query $q -As PSObject -EnableException).RowCount
+				if ($null -eq $cnt) { throw "Tabelle nicht gefunden." }
 				$row.Cells[3].Value = "{0:N0}" -f [int64]$cnt
 			}
 			catch
