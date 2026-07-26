@@ -1,5 +1,15 @@
 # sqmDataTransfer — Changelog
 
+## [0.1.13.0] — 2026-07-26
+
+### Copyable large-table dialog instead of a MessageBox
+
+The large-table warning dialog (0.1.12.0) used a plain `MessageBox.Show()`. `Ctrl+C` copies the
+whole dialog text - intro sentence, every flagged table, the yes/no question - not just the
+command to paste into PowerShell, which got unwieldy with multiple large tables flagged at once.
+Replaced it with a small dialog that has a read-only textbox for context plus an explicit "Copy to
+clipboard" button that copies only the clean command lines.
+
 ## [0.1.12.0] — 2026-07-26
 
 ### Large-table warning with a ready-to-use chunked-transfer command
