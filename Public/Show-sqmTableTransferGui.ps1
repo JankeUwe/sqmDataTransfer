@@ -330,6 +330,18 @@ function Show-sqmTableTransferGui
 	$btnCompareAll.Size = New-Object System.Drawing.Size(120, 26)
 	$btnCompareAll.Anchor = 'Top,Right'
 
+	# Standardmaessig AUS: -VerifyMismatches ist ein echter COUNT_BIG(*)-Scan fuer jede als
+	# Mismatch markierte Tabelle - bei einer noch nicht abgeschlossenen grossen Tabelle (z.B.
+	# waehrend eines laufenden Chunk-Transfers) kann das Stunden dauern und wuerde den Button
+	# (synchron, kein Hintergrund-Thread) fuer genauso lange einfrieren. Nur fuer den finalen,
+	# tatsaechlich vollstaendigen Kundenreport gezielt einschalten.
+	$chkVerifyMismatches = New-Object System.Windows.Forms.CheckBox
+	$chkVerifyMismatches.Text = Get-sqmTransferString -Key 'Gui.VerifyMismatches'
+	$chkVerifyMismatches.ForeColor = $cText
+	$chkVerifyMismatches.Location = New-Object System.Drawing.Point(240, 196)
+	$chkVerifyMismatches.Size = New-Object System.Drawing.Size(450, 22)
+	$chkVerifyMismatches.Checked = $false
+
 	# Tabellen-Grid: Checkbox | Tabelle | Aktion (Anlegen/Transfer-Symbol) | Zeilen (Quelle, lazy)
 	$dgvTables = New-Object System.Windows.Forms.DataGridView
 	$dgvTables.Location = New-Object System.Drawing.Point(12, 220)
@@ -360,7 +372,7 @@ function Show-sqmTableTransferGui
 
 	$dgvTables.Columns.AddRange([System.Windows.Forms.DataGridViewColumn[]]@($colChk, $colName, $colAction, $colRows, $colRowsDst))
 
-	$form.Controls.AddRange(@($lblTables, $btnSelectAll, $btnSelectNone, $btnCompareAll, $btnLoadTables, $dgvTables))
+	$form.Controls.AddRange(@($lblTables, $btnSelectAll, $btnSelectNone, $chkVerifyMismatches, $btnCompareAll, $btnLoadTables, $dgvTables))
 
 	$btnLoadTables.Add_Click({
 			$dgvTables.Rows.Clear()
@@ -409,9 +421,11 @@ function Show-sqmTableTransferGui
 		})
 
 	# Ein einziger konsolidierter Bericht ueber die gesamte Quelle/Ziel-Kombination - Ersatz fuer
-	# "X Einzelberichte" bei tabellenweisem Vorgehen (siehe Gui.ReportPerRun unten). Nutzt dieselbe
-	# guenstige sys.partitions-Abfrage wie das Grid, prueft aber Abweichungen per -VerifyMismatches
-	# exakt nach, da dieser Button seltener und gezielt ausgeloest wird.
+	# "X Einzelberichte" bei tabellenweisem Vorgehen (siehe Gui.ReportPerRun unten). Nutzt immer die
+	# guenstige sys.partitions-Abfrage; ob als Mismatch markierte Tabellen zusaetzlich per echtem
+	# COUNT_BIG(*) exakt nachgeprueft werden, steuert die Checkbox daneben (siehe deren Kommentar -
+	# standardmaessig aus, weil das bei einer noch laufenden grossen Tabelle den Button-Klick fuer
+	# Stunden blockieren wuerde, da hier kein Hintergrund-Thread existiert).
 	$btnCompareAll.Add_Click({
 			if (-not $srcPanel.Instance.Text -or -not $srcPanel.Database.Text -or -not $dstPanel.Instance.Text -or -not $dstPanel.Database.Text)
 			{
@@ -431,7 +445,7 @@ function Show-sqmTableTransferGui
 				$dstCred = Get-CredentialFromPanel $dstPanel
 				$cmp = Compare-sqmDatabaseRowCount -Source $srcPanel.Instance.Text -SourceDatabase $srcPanel.Database.Text `
 													-Destination $dstPanel.Instance.Text -DestinationDatabase $dstPanel.Database.Text `
-													-SourceCredential $srcCred -DestinationCredential $dstCred -VerifyMismatches
+													-SourceCredential $srcCred -DestinationCredential $dstCred -VerifyMismatches:$chkVerifyMismatches.Checked
 
 				$reportPath = if ($txtReportPath.Text) { $txtReportPath.Text } else { Get-sqmTransferConfig -Key 'OutputPath' }
 				if (-not (Test-Path $reportPath)) { New-Item -ItemType Directory -Path $reportPath -Force | Out-Null }
