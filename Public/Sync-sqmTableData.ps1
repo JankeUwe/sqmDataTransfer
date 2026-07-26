@@ -128,7 +128,7 @@ function Sync-sqmTableData
 	if (-not $PSBoundParameters.ContainsKey('BatchSize'))
 	{
 		$BatchSize = Get-sqmTransferConfig -Key 'DefaultBatchSize'
-		if (-not $BatchSize) { $BatchSize = 50000 }
+		if (-not $BatchSize) { $BatchSize = 200000 }
 	}
 
 	function _FormatSqlLiteral

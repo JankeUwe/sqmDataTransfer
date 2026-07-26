@@ -17,7 +17,7 @@ $script:sqmtModuleConfig = @{
 	# sonst mit "certificate chain was issued by an authority that is not trusted" fehl.
 	TrustServerCertificate = $true
 	# Standard-Batchgroesse fuer Copy-sqmTableData (Copy-DbaDbTableData -BatchSize).
-	DefaultBatchSize       = 50000
+	DefaultBatchSize       = 200000
 }
 
 # Aktuelle Version aus der Manifestdatei lesen

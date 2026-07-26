@@ -222,7 +222,7 @@ function Invoke-sqmTableTransfer
 		if (-not $PSBoundParameters.ContainsKey('BatchSize'))
 		{
 			$BatchSize = Get-sqmTransferConfig -Key 'DefaultBatchSize'
-			if (-not $BatchSize) { $BatchSize = 50000 }
+			if (-not $BatchSize) { $BatchSize = 200000 }
 		}
 
 		if (-not $PSBoundParameters.ContainsKey('OutputPath') -or [string]::IsNullOrWhiteSpace($OutputPath))

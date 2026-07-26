@@ -96,7 +96,7 @@ function Invoke-sqmDirectBulkCopy
 		[Parameter(Mandatory = $false)]
 		[bool]$KeepNulls = $true,
 		[Parameter(Mandatory = $false)]
-		[int]$BatchSize = 50000,
+		[int]$BatchSize = 200000,
 		[Parameter(Mandatory = $false)]
 		[int]$BulkCopyTimeOut = 300,
 		[Parameter(Mandatory = $false)]
