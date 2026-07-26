@@ -77,6 +77,76 @@ function Show-sqmTableTransferGui
 		$tb.BorderStyle = 'FixedSingle'
 	}
 
+	# Kopierbarer Bestaetigungsdialog fuer die Grosse-Tabelle-Warnung (siehe btnRun-Handler unten) -
+	# eine normale MessageBox erlaubt zwar Strg+C, kopiert dabei aber den kompletten Dialogtext
+	# (Intro + jede Tabelle + Frage) statt nur der eigentlichen Befehlszeilen. Diese Textbox zeigt
+	# denselben Text zum Lesen, der Copy-Button legt aber NUR die reinen Befehle in die
+	# Zwischenablage - fertig zum Einfuegen in PowerShell, ohne Nacharbeit.
+	function Show-LargeTableCopyDialog($introText, [string[]]$displayBlocks, [string[]]$commandsOnly)
+	{
+		$dlg = New-Object System.Windows.Forms.Form
+		$dlg.Text = Get-sqmTransferString -Key 'Gui.MessageBoxTitle'
+		$dlg.Size = New-Object System.Drawing.Size(760, 420)
+		$dlg.StartPosition = 'CenterParent'
+		$dlg.FormBorderStyle = 'FixedDialog'
+		$dlg.MaximizeBox = $false
+		$dlg.MinimizeBox = $false
+		$dlg.BackColor = $cPanel
+		$dlg.ForeColor = $cText
+		$dlg.Font = $form.Font
+
+		$lblIntro = New-Object System.Windows.Forms.Label
+		$lblIntro.Text = $introText
+		$lblIntro.ForeColor = $cText
+		$lblIntro.Location = New-Object System.Drawing.Point(15, 15)
+		$lblIntro.Size = New-Object System.Drawing.Size(715, 40)
+
+		$txtCommands = New-Object System.Windows.Forms.TextBox
+		$txtCommands.Multiline = $true
+		$txtCommands.ReadOnly = $true
+		$txtCommands.ScrollBars = 'Both'
+		$txtCommands.WordWrap = $false
+		$txtCommands.Location = New-Object System.Drawing.Point(15, 60)
+		$txtCommands.Size = New-Object System.Drawing.Size(715, 210)
+		$txtCommands.Text = ($displayBlocks -join "`r`n`r`n")
+		Style-TextBox $txtCommands
+
+		$lblQuestion = New-Object System.Windows.Forms.Label
+		$lblQuestion.Text = Get-sqmTransferString -Key 'Gui.LargeTableWarningQuestion'
+		$lblQuestion.ForeColor = $cText
+		$lblQuestion.Location = New-Object System.Drawing.Point(15, 278)
+		$lblQuestion.Size = New-Object System.Drawing.Size(715, 36)
+
+		$btnCopy = New-Object System.Windows.Forms.Button
+		$btnCopy.Text = Get-sqmTransferString -Key 'Gui.CopyToClipboard'
+		Style-Button $btnCopy
+		$btnCopy.Location = New-Object System.Drawing.Point(15, 320)
+		$btnCopy.Size = New-Object System.Drawing.Size(190, 30)
+		$btnCopy.Add_Click({ [System.Windows.Forms.Clipboard]::SetText(($commandsOnly -join "`r`n")) }.GetNewClosure())
+
+		$btnContinue = New-Object System.Windows.Forms.Button
+		$btnContinue.Text = Get-sqmTransferString -Key 'Gui.ContinueAnyway'
+		Style-Button $btnContinue
+		$btnContinue.Location = New-Object System.Drawing.Point(420, 320)
+		$btnContinue.Size = New-Object System.Drawing.Size(150, 30)
+		$btnContinue.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+
+		$btnCancel = New-Object System.Windows.Forms.Button
+		$btnCancel.Text = Get-sqmTransferString -Key 'Gui.Cancel'
+		Style-Button $btnCancel
+		$btnCancel.Location = New-Object System.Drawing.Point(580, 320)
+		$btnCancel.Size = New-Object System.Drawing.Size(150, 30)
+		$btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::No
+
+		$dlg.AcceptButton = $btnContinue
+		$dlg.CancelButton = $btnCancel
+		$dlg.Controls.AddRange(@($lblIntro, $txtCommands, $lblQuestion, $btnCopy, $btnContinue, $btnCancel))
+
+		$result = $dlg.ShowDialog($form)
+		$dlg.Dispose()
+		return ($result -eq [System.Windows.Forms.DialogResult]::Yes)
+	}
+
 	# Faerbt/beschriftet eine Tabellen-Grid-Zeile anhand eines Compare-sqmDatabaseRowCount-Status
 	# (oder $null, wenn das Ziel beim Laden nicht erreichbar war - dann bleibt der bisherige
 	# "Unbekannt"-Zustand erhalten). 'Match' = bereits fertig uebertragen: Haekchen raus, gruen
@@ -772,6 +842,7 @@ function Show-sqmTableTransferGui
 				$largeThreshold = Get-sqmTransferConfig -Key 'LargeTableRowThreshold'
 				if (-not $largeThreshold) { $largeThreshold = 10000000 }
 				$largeTableMessages = [System.Collections.Generic.List[string]]::new()
+				$largeTableCommands = [System.Collections.Generic.List[string]]::new()
 				foreach ($t in $selectedTables)
 				{
 					$schemaNameChk = 'dbo'; $tableNameChk = $t
@@ -785,13 +856,13 @@ function Show-sqmTableTransferGui
 						$colText = if ($suggestedCol) { $suggestedCol } else { '<ChunkSpalte>' }
 						$cmdText = "Invoke-sqmChunkedTableTransfer -Source '$($srcPanel.Instance.Text)' -SourceDatabase '$($srcPanel.Database.Text)' -Destination '$($dstPanel.Instance.Text)' -DestinationDatabase '$($dstPanel.Database.Text)' -Table '$t' -ChunkColumn '$colText'"
 						$largeTableMessages.Add("$t ($('{0:N0}' -f [int64]$rc) Zeilen):`r`n$cmdText")
+						$largeTableCommands.Add($cmdText)
 					}
 				}
 				if ($largeTableMessages.Count -gt 0)
 				{
-					$msgBody = (Get-sqmTransferString -Key 'Gui.LargeTableWarningIntro') + "`r`n`r`n" + ($largeTableMessages -join "`r`n`r`n") + "`r`n`r`n" + (Get-sqmTransferString -Key 'Gui.LargeTableWarningQuestion')
-					$answer = [System.Windows.Forms.MessageBox]::Show($msgBody, (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'YesNo', 'Warning')
-					if ($answer -eq [System.Windows.Forms.DialogResult]::No) { return }
+					$proceed = Show-LargeTableCopyDialog (Get-sqmTransferString -Key 'Gui.LargeTableWarningIntro') $largeTableMessages.ToArray() $largeTableCommands.ToArray()
+					if (-not $proceed) { return }
 				}
 			}
 			catch { }
