@@ -446,9 +446,13 @@ function Invoke-sqmChunkedTableTransfer
 				SourceCredential	   = $srcCred
 				DestinationCredential  = $dstCred
 				# Tabelle anlegen und FKs/Indizes/Trigger deaktivieren passiert oben bereits einmal
-				# fuer den gesamten Lauf, nicht mehr pro Chunk.
+				# fuer den gesamten Lauf, nicht mehr pro Chunk. Der eigene CompareRowCount-Schritt
+				# von Invoke-sqmTableTransfer vergleicht immer die GANZE Tabelle, nicht nur diesen
+				# Chunk - sein Ergebnis wird unten sowieso verworfen (Step -eq 'CompareRowCount'),
+				# also lieber den vollen COUNT_BIG(*)-Scan (beidseitig) gar nicht erst ausfuehren.
 				ScriptMetadata		   = $false
 				SkipConstraintHandling = $true
+				SkipRowCountCompare    = $true
 				KeepIdentity		   = $KeepIdentity
 				KeepNulls			   = $KeepNulls
 				ContinueOnError		   = $true

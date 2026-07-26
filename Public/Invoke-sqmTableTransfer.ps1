@@ -75,6 +75,14 @@
 .PARAMETER RevalidateForeignKeys
     Revalidate foreign key data when re-enabling (WITH CHECK). Default: $true.
 
+.PARAMETER SkipRowCountCompare
+    Skip the post-copy Compare-sqmTableRowCount step entirely (logged as 'Skipped'). Intended for
+    callers that already do their own comparison and would otherwise discard this one unread -
+    Invoke-sqmChunkedTableTransfer passes this on every per-chunk call, since its own WHERE-scoped
+    compare is what actually matters there; this function's own compare is always whole-table, so
+    for a chunked transfer it would just be a full COUNT_BIG(*) scan on both sides, on every single
+    chunk, purely to be thrown away.
+
 .PARAMETER Truncate
     Truncate the destination table before copying data.
 
@@ -177,6 +185,8 @@ function Invoke-sqmTableTransfer
 		[switch]$SkipConstraintHandling,
 		[Parameter(Mandatory = $false)]
 		[bool]$RevalidateForeignKeys = $true,
+		[Parameter(Mandatory = $false)]
+		[switch]$SkipRowCountCompare,
 		[Parameter(Mandatory = $false)]
 		[switch]$Truncate,
 		[Parameter(Mandatory = $false)]
@@ -411,7 +421,11 @@ function Invoke-sqmTableTransfer
 				}
 
 				# --- Zeilen vergleichen (nur sinnvoll wenn tatsaechlich kopiert wurde) ---
-				if ($copyResult -and $copyResult.Status -eq 'Success')
+				if ($SkipRowCountCompare)
+				{
+					_AddResult $t 'CompareRowCount' 'Skipped' 'SkipRowCountCompare gesetzt - Aufrufer vergleicht selbst.'
+				}
+				elseif ($copyResult -and $copyResult.Status -eq 'Success')
 				{
 					$compareResult = Compare-sqmTableRowCount -Source $Source -SourceDatabase $SourceDatabase `
 															   -Destination $Destination -DestinationDatabase $DestinationDatabase `
