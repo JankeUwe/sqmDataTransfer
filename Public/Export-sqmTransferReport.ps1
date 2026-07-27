@@ -122,6 +122,16 @@ function Export-sqmTransferReport
 	$mismatchCount = @($allTables | Where-Object { $rowCountByTable.ContainsKey($_) -and -not $rowCountByTable[$_].Match }).Count
 	$notComparedCount = @($allTables | Where-Object { -not $rowCountByTable.ContainsKey($_) }).Count
 
+	[Int64]$totalRowsTransferred = 0
+	foreach ($t in $allTables)
+	{
+		if ($rowCountByTable.ContainsKey($t) -and $null -ne $rowCountByTable[$t].DestinationRows)
+		{
+			$totalRowsTransferred += [Int64]$rowCountByTable[$t].DestinationRows
+		}
+	}
+	$totalRowsTransferredText = '{0:N0}' -f $totalRowsTransferred
+
 	# --- "Fehlende / fehlgeschlagene Tabellen" ------------------------------------
 	$problemRowsHtml = New-Object System.Text.StringBuilder
 	if ($problemTableCount -eq 0)
@@ -224,6 +234,7 @@ footer{margin-top:28px;color:var(--mut);font-size:12px}
 
 <div class="chips">
     <div class="chip"><b>$totalTables</b> Tabelle(n) gesamt</div>
+    <div class="chip"><b>$totalRowsTransferredText</b> Zeilen gesamt übertragen</div>
     <div class="chip $(if ($problemTableCount -gt 0) { 'err' } else { 'ok' })"><b>$problemTableCount</b> mit Problemen</div>
     <div class="chip ok"><b>$matchCount</b> Zeilenzahl OK</div>
     <div class="chip $(if ($mismatchCount -gt 0) { 'warn' } else { 'ok' })"><b>$mismatchCount</b> Abweichung(en)</div>
