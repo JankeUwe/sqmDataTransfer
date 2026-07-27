@@ -147,6 +147,72 @@ function Show-sqmTableTransferGui
 		return ($result -eq [System.Windows.Forms.DialogResult]::Yes)
 	}
 
+	# Ueber-Dialog - gleiche Konvention wie die AboutForm.cs der C#-Schwestertools (SqlRefactorAnalyzer,
+	# SsisAnalyzer): Name fett, Version darunter gedimmt, kurze Beschreibung, Copyright-Zeile,
+	# klickbarer Link auf powershelldba.de (Start-Process statt der C#-Variante ProcessStartInfo).
+	function Show-AboutDialog
+	{
+		$dlg = New-Object System.Windows.Forms.Form
+		$dlg.Text = Get-sqmTransferString -Key 'Gui.AboutTitle'
+		$dlg.Size = New-Object System.Drawing.Size(460, 280)
+		$dlg.StartPosition = 'CenterParent'
+		$dlg.FormBorderStyle = 'FixedDialog'
+		$dlg.MaximizeBox = $false
+		$dlg.MinimizeBox = $false
+		$dlg.BackColor = $cPanel
+		$dlg.ForeColor = $cText
+		$dlg.Font = $form.Font
+
+		$lblName = New-Object System.Windows.Forms.Label
+		$lblName.Text = 'sqmDataTransfer'
+		$lblName.Font = New-Object System.Drawing.Font('Segoe UI', 14, [System.Drawing.FontStyle]::Bold)
+		$lblName.ForeColor = $cText
+		$lblName.AutoSize = $true
+		$lblName.Location = New-Object System.Drawing.Point(20, 20)
+
+		$lblVersion = New-Object System.Windows.Forms.Label
+		$lblVersion.Text = "Version $(Get-sqmTransferConfig -Key 'ModuleVersion')"
+		$lblVersion.ForeColor = $cDim
+		$lblVersion.AutoSize = $true
+		$lblVersion.Location = New-Object System.Drawing.Point(22, 54)
+
+		$lblDesc = New-Object System.Windows.Forms.Label
+		$lblDesc.Text = Get-sqmTransferString -Key 'Gui.AboutDescription'
+		$lblDesc.ForeColor = $cText
+		$lblDesc.Location = New-Object System.Drawing.Point(20, 84)
+		$lblDesc.Size = New-Object System.Drawing.Size(410, 80)
+
+		$aboutYearSpan = "2026-$((Get-Date).ToString('yy'))"
+		$lblCopyright = New-Object System.Windows.Forms.Label
+		$lblCopyright.Text = "(c) dtcSoftware - Uwe Janke $aboutYearSpan"
+		$lblCopyright.ForeColor = $cDim
+		$lblCopyright.AutoSize = $true
+		$lblCopyright.Location = New-Object System.Drawing.Point(22, 172)
+
+		$lnkSite = New-Object System.Windows.Forms.LinkLabel
+		$lnkSite.Text = 'www.powershelldba.de'
+		$lnkSite.LinkColor = $cAccent
+		$lnkSite.ActiveLinkColor = [System.Drawing.Color]::FromArgb(120, 180, 230)
+		$lnkSite.VisitedLinkColor = $cAccent
+		$lnkSite.AutoSize = $true
+		$lnkSite.Location = New-Object System.Drawing.Point(22, 194)
+		$lnkSite.Add_LinkClicked({
+				try { Start-Process 'https://www.powershelldba.de' } catch { }
+			})
+
+		$btnCloseAbout = New-Object System.Windows.Forms.Button
+		$btnCloseAbout.Text = Get-sqmTransferString -Key 'Gui.CloseButton'
+		Style-Button $btnCloseAbout
+		$btnCloseAbout.Location = New-Object System.Drawing.Point(320, 210)
+		$btnCloseAbout.Size = New-Object System.Drawing.Size(110, 30)
+		$btnCloseAbout.DialogResult = [System.Windows.Forms.DialogResult]::OK
+
+		$dlg.AcceptButton = $btnCloseAbout
+		$dlg.Controls.AddRange(@($lblName, $lblVersion, $lblDesc, $lblCopyright, $lnkSite, $btnCloseAbout))
+		[void]$dlg.ShowDialog($form)
+		$dlg.Dispose()
+	}
+
 	# Faerbt/beschriftet eine Tabellen-Grid-Zeile anhand eines Compare-sqmDatabaseRowCount-Status
 	# (oder $null, wenn das Ziel beim Laden nicht erreichbar war - dann bleibt der bisherige
 	# "Unbekannt"-Zustand erhalten). 'Match' = bereits fertig uebertragen: Haekchen raus, gruen
@@ -202,9 +268,12 @@ function Show-sqmTableTransferGui
 	}
 
 	# --- Main form ---------------------------------------------------------------
+	# Titel-Konvention wie sqmSQLTool\Show-sqmToolGui.ps1 / SQLMigration\SQL-Migration.ps1:
+	# "{Tool}  v{Version}   |   powershelldba.de - Janke (c) {yearSpan}".
 	$form = New-Object System.Windows.Forms.Form
 	$Global:__sqmDataTransferGuiCtx.Form = $form
-	$form.Text = Get-sqmTransferString -Key 'Gui.Title'
+	$guiYearSpan = "2026-$((Get-Date).ToString('yy'))"
+	$form.Text = "$(Get-sqmTransferString -Key 'Gui.Title')  v$(Get-sqmTransferConfig -Key 'ModuleVersion')   |   powershelldba.de - Janke (c) $guiYearSpan"
 	$form.Size = New-Object System.Drawing.Size(980, 926)
 	$form.StartPosition = 'CenterScreen'
 	$form.BackColor = $cPanel
@@ -763,14 +832,21 @@ function Show-sqmTableTransferGui
 	$btnClose.Size = New-Object System.Drawing.Size(100, 32)
 	$btnClose.Add_Click({ $form.Close() })
 
+	$btnAbout = New-Object System.Windows.Forms.Button
+	$btnAbout.Text = Get-sqmTransferString -Key 'Gui.AboutButton'
+	Style-Button $btnAbout
+	$btnAbout.Location = New-Object System.Drawing.Point(292, 626)
+	$btnAbout.Size = New-Object System.Drawing.Size(90, 32)
+	$btnAbout.Add_Click({ Show-AboutDialog })
+
 	$lblStatus = New-Object System.Windows.Forms.Label
 	$lblStatus.Text = ''
-	$lblStatus.Location = New-Object System.Drawing.Point(300, 632)
-	$lblStatus.Size = New-Object System.Drawing.Size(650, 22)
+	$lblStatus.Location = New-Object System.Drawing.Point(392, 632)
+	$lblStatus.Size = New-Object System.Drawing.Size(558, 22)
 	$lblStatus.Anchor = 'Top,Left,Right'
 	$lblStatus.ForeColor = $cDim
 
-	$form.Controls.AddRange(@($btnRun, $btnClose, $lblStatus))
+	$form.Controls.AddRange(@($btnRun, $btnClose, $btnAbout, $lblStatus))
 
 	# --- Log output ----------------------------------------------------------------
 	$lblLog = New-Object System.Windows.Forms.Label
@@ -841,6 +917,12 @@ function Show-sqmTableTransferGui
 			{
 				$largeThreshold = Get-sqmTransferConfig -Key 'LargeTableRowThreshold'
 				if (-not $largeThreshold) { $largeThreshold = 10000000 }
+				# Nur zum Chunking raten, wenn das Ziel schon einen nennenswerten Teil der Quelle
+				# enthaelt (Default 30%) - bei einem leeren/frischen Ziel bringt Chunking (dessen
+				# Vorteil Resumability ist) nichts, und der normale All-or-nothing-Copy ist schneller.
+				# Gleiche Logik/Begruendung wie in Invoke-sqmTableTransfer's eigener Warnung.
+				$minExistingPercent = Get-sqmTransferConfig -Key 'ChunkAdviceMinExistingPercent'
+				if (-not $minExistingPercent) { $minExistingPercent = 30 }
 				$largeTableMessages = [System.Collections.Generic.List[string]]::new()
 				$largeTableCommands = [System.Collections.Generic.List[string]]::new()
 				foreach ($t in $selectedTables)
@@ -852,11 +934,24 @@ function Show-sqmTableTransferGui
 					$rc = (Invoke-DbaQuery @sizeParams -Query "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$schemaNameChk].[$tableNameChk]') AND index_id IN (0, 1)" -As PSObject -EnableException).RowCount
 					if ($null -ne $rc -and [int64]$rc -gt $largeThreshold)
 					{
-						$suggestedCol = Get-sqmSuggestedChunkColumn -SqlInstance $srcPanel.Instance.Text -Database $srcPanel.Database.Text -Table $t -SqlCredential $srcCred
-						$colText = if ($suggestedCol) { $suggestedCol } else { '<ChunkSpalte>' }
-						$cmdText = "Invoke-sqmChunkedTableTransfer -Source '$($srcPanel.Instance.Text)' -SourceDatabase '$($srcPanel.Database.Text)' -Destination '$($dstPanel.Instance.Text)' -DestinationDatabase '$($dstPanel.Database.Text)' -Table '$t' -ChunkColumn '$colText'"
-						$largeTableMessages.Add("$t ($('{0:N0}' -f [int64]$rc) Zeilen):`r`n$cmdText")
-						$largeTableCommands.Add($cmdText)
+						$dstRc = $null
+						try
+						{
+							$dstSizeParams = @{ SqlInstance = $dstPanel.Instance.Text; Database = $dstPanel.Database.Text; ErrorAction = 'Stop' }
+							if ($dstCred) { $dstSizeParams['SqlCredential'] = $dstCred }
+							$dstRc = (Invoke-DbaQuery @dstSizeParams -Query "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$schemaNameChk].[$tableNameChk]') AND index_id IN (0, 1)" -As PSObject -EnableException).RowCount
+						}
+						catch { $dstRc = $null }
+						$existingPercent = if ($null -ne $dstRc -and [int64]$rc -gt 0) { ([int64]$dstRc / [int64]$rc) * 100 } else { 0 }
+
+						if ($existingPercent -ge $minExistingPercent)
+						{
+							$suggestedCol = Get-sqmSuggestedChunkColumn -SqlInstance $srcPanel.Instance.Text -Database $srcPanel.Database.Text -Table $t -SqlCredential $srcCred
+							$colText = if ($suggestedCol) { $suggestedCol } else { '<ChunkSpalte>' }
+							$cmdText = "Invoke-sqmChunkedTableTransfer -Source '$($srcPanel.Instance.Text)' -SourceDatabase '$($srcPanel.Database.Text)' -Destination '$($dstPanel.Instance.Text)' -DestinationDatabase '$($dstPanel.Database.Text)' -Table '$t' -ChunkColumn '$colText'"
+							$largeTableMessages.Add("$t ($('{0:N0}' -f [int64]$rc) Zeilen, Ziel bereits $('{0:N1}' -f $existingPercent)% befuellt):`r`n$cmdText")
+							$largeTableCommands.Add($cmdText)
+						}
 					}
 				}
 				if ($largeTableMessages.Count -gt 0)

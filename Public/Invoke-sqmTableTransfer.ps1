@@ -339,14 +339,36 @@ function Invoke-sqmTableTransfer
 
 					if ($null -ne $rcRaw -and [int64]$rcRaw -gt $largeThreshold)
 					{
-						$suggestedCol = Get-sqmSuggestedChunkColumn -SqlInstance $Source -Database $SourceDatabase -Table $t -SqlCredential $srcCred
-						$colText = if ($suggestedCol) { $suggestedCol } else { '<ChunkSpalte>' }
-						$suggestedCmd = "Invoke-sqmChunkedTableTransfer -Source '$Source' -SourceDatabase '$SourceDatabase' -Destination '$Destination' -DestinationDatabase '$DestinationDatabase' -Table '$t' -ChunkColumn '$colText'"
-						$colNote = if ($suggestedCol) { "Vorgeschlagene ChunkColumn (Datumsspalte, ungeprueft): '$suggestedCol'." } else { 'Keine Datumsspalte gefunden - ChunkColumn manuell waehlen.' }
-						$msg = "Tabelle $t hat $('{0:N0}' -f [int64]$rcRaw) Zeilen (Schwellwert: $('{0:N0}' -f $largeThreshold)) - wird als einzelner All-or-nothing-Copy uebertragen. $colNote Statt dessen erwaegen: $suggestedCmd"
-						Write-Warning $msg
-						Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
-						_AddResult $t 'LargeTableWarning' 'Warning' $msg
+						# Nur tatsaechlich zum Chunking raten, wenn das Ziel schon einen nennenswerten Teil
+						# der Quelle enthaelt (Default 30%, siehe ChunkAdviceMinExistingPercent) - der
+						# eigentliche Vorteil von Invoke-sqmChunkedTableTransfer ist Resumability (bereits
+						# vollstaendige Chunks ueberspringen). Bei einem leeren oder kaum befuellten Ziel
+						# (frischer Transfer einer grossen Tabelle) gibt es davon nichts zu profitieren,
+						# und der normale All-or-nothing-Copy ist schlicht schneller (kein Pro-Chunk-
+						# Overhead) - dort soll die Warnung nicht im Weg stehen. Metadaten-Lookup, kein Scan.
+						$minExistingPercent = Get-sqmTransferConfig -Key 'ChunkAdviceMinExistingPercent'
+						if (-not $minExistingPercent) { $minExistingPercent = 30 }
+						$dstRcRaw = $null
+						try
+						{
+							$dstSizeParams = @{ SqlInstance = $Destination; Database = $DestinationDatabase; ErrorAction = 'Stop' }
+							if ($dstCred) { $dstSizeParams['SqlCredential'] = $dstCred }
+							$dstRcRaw = (Invoke-DbaQuery @dstSizeParams -Query "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$schemaNameChk].[$tableNameChk]') AND index_id IN (0, 1)" -As PSObject -EnableException).RowCount
+						}
+						catch { $dstRcRaw = $null }
+						$existingPercent = if ($null -ne $dstRcRaw -and [int64]$rcRaw -gt 0) { ([int64]$dstRcRaw / [int64]$rcRaw) * 100 } else { 0 }
+
+						if ($existingPercent -ge $minExistingPercent)
+						{
+							$suggestedCol = Get-sqmSuggestedChunkColumn -SqlInstance $Source -Database $SourceDatabase -Table $t -SqlCredential $srcCred
+							$colText = if ($suggestedCol) { $suggestedCol } else { '<ChunkSpalte>' }
+							$suggestedCmd = "Invoke-sqmChunkedTableTransfer -Source '$Source' -SourceDatabase '$SourceDatabase' -Destination '$Destination' -DestinationDatabase '$DestinationDatabase' -Table '$t' -ChunkColumn '$colText'"
+							$colNote = if ($suggestedCol) { "Vorgeschlagene ChunkColumn (Datumsspalte, ungeprueft): '$suggestedCol'." } else { 'Keine Datumsspalte gefunden - ChunkColumn manuell waehlen.' }
+							$msg = "Tabelle $t hat $('{0:N0}' -f [int64]$rcRaw) Zeilen, Ziel bereits $('{0:N1}' -f $existingPercent)% davon befuellt - wird als einzelner All-or-nothing-Copy uebertragen. $colNote Statt dessen erwaegen (nutzt bereits vorhandene Daten, ueberspringt fertige Chunks): $suggestedCmd"
+							Write-Warning $msg
+							Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
+							_AddResult $t 'LargeTableWarning' 'Warning' $msg
+						}
 					}
 				}
 				catch { }

@@ -25,6 +25,12 @@ $script:sqmtModuleConfig = @{
 	# fertigen Invoke-sqmChunkedTableTransfer-Befehlsvorschlag statt die Tabelle stillschweigend
 	# als einzelnen All-or-nothing-Copy zu behandeln.
 	LargeTableRowThreshold = 10000000
+	# Die Chunking-Empfehlung selbst wird nur ausgesprochen, wenn das Ziel bereits mindestens
+	# diesen Anteil (in %) der Quellzeilen enthaelt - Chunking bringt seinen Vorteil (Resumability,
+	# bereits vollstaendige Chunks ueberspringen) nur bei einem teilweise befuellten Ziel. Bei einem
+	# leeren/frischen Ziel ist der normale All-or-nothing-Copy schlicht schneller (kein Pro-Chunk-
+	# Overhead), darum dort keine Empfehlung.
+	ChunkAdviceMinExistingPercent = 30
 }
 
 # Aktuelle Version aus der Manifestdatei lesen

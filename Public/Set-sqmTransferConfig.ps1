@@ -25,6 +25,12 @@
     suggests an Invoke-sqmChunkedTableTransfer command instead of silently doing an all-or-nothing
     copy. Default: 10,000,000.
 
+.PARAMETER ChunkAdviceMinExistingPercent
+    The large-table warning above only actually suggests chunking once the destination already
+    holds at least this percentage of the source's rows. Chunking's advantage is resumability
+    (skipping already-complete chunks) - on an empty or barely-filled destination there is nothing
+    to resume, and a plain all-or-nothing copy is simply faster (no per-chunk overhead). Default: 30.
+
 .PARAMETER PassThru
     Returns the updated configuration as an object.
 
@@ -50,6 +56,9 @@ function Set-sqmTransferConfig
 		[Parameter(Mandatory = $false)]
 		[ValidateRange(1, [int]::MaxValue)]
 		[int]$LargeTableRowThreshold,
+		[Parameter(Mandatory = $false)]
+		[ValidateRange(0, 100)]
+		[int]$ChunkAdviceMinExistingPercent,
 		[Parameter(Mandatory = $false)]
 		[switch]$PassThru
 	)
@@ -126,6 +135,14 @@ function Set-sqmTransferConfig
 		if ($PSCmdlet.ShouldProcess('sqmtModuleConfig', "LargeTableRowThreshold = $LargeTableRowThreshold"))
 		{
 			$globalConfig['LargeTableRowThreshold'] = $LargeTableRowThreshold
+			$updated = $true
+		}
+	}
+	if ($PSBoundParameters.ContainsKey('ChunkAdviceMinExistingPercent'))
+	{
+		if ($PSCmdlet.ShouldProcess('sqmtModuleConfig', "ChunkAdviceMinExistingPercent = $ChunkAdviceMinExistingPercent"))
+		{
+			$globalConfig['ChunkAdviceMinExistingPercent'] = $ChunkAdviceMinExistingPercent
 			$updated = $true
 		}
 	}

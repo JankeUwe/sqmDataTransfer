@@ -1,5 +1,25 @@
 # sqmDataTransfer — Changelog
 
+## [0.1.17.0] — 2026-07-27
+
+### Chunking advice now only fires when it would actually help
+
+A plain transfer of a large table is always faster than chunking it (no per-chunk overhead) -
+chunking's whole benefit is resumability (skipping already-complete chunks), which only matters
+when the destination already holds a meaningful chunk of the data. The large-table warning (both
+`Invoke-sqmTableTransfer` and the GUI's pre-run check) now only suggests
+`Invoke-sqmChunkedTableTransfer` once the destination already contains at least
+`ChunkAdviceMinExistingPercent` (default 30%) of the source's rows - metadata lookup, no scan, same
+cost as before. A fresh/empty destination gets no chunking nag and just runs the fast plain copy.
+Configurable via `Set-sqmTransferConfig -ChunkAdviceMinExistingPercent`.
+
+### GUI: window title now shows version and powershelldba.de, plus an About box
+
+Matches the existing `sqmSQLTool`/`SQL-Migration` convention (`{Tool} v{Version} | powershelldba.de
+- Janke (c) {yearSpan}`). Added an "Ueber"/"About" button next to Run/Close that opens a small
+dialog with the module name, version, description, copyright and a clickable link to
+www.powershelldba.de.
+
 ## [0.1.16.0] — 2026-07-27
 
 ### Fix: silent destination row-count snapshot failure could have caused full-table duplicate copy

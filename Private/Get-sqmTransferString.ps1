@@ -211,6 +211,9 @@ $script:sqmtStrings = @{
 		'Gui.LogLabel'              = 'Protokoll:'
 		'Gui.ResultLabel'           = 'Ergebnis (je Tabelle/Schritt):'
 		'Gui.MessageBoxTitle'       = 'sqmDataTransfer'
+		'Gui.AboutButton'           = 'Ueber'
+		'Gui.AboutTitle'            = 'Ueber sqmDataTransfer'
+		'Gui.AboutDescription'      = 'Transferiert Tabellendaten zwischen SQL-Server-Instanzen: Metadaten-Scripting, Foreign-Key-/Index-Handling, chunk-weiser Transfer grosser Tabellen mit Wiederaufnahme, Zeilenzahl-Abgleich und HTML-Berichte.'
 	}
 	en = @{
 		'Common.WhatIf' = 'WhatIf: {0}'
@@ -388,5 +391,8 @@ $script:sqmtStrings = @{
 		'Gui.LogLabel'              = 'Log:'
 		'Gui.ResultLabel'           = 'Result (per table/step):'
 		'Gui.MessageBoxTitle'       = 'sqmDataTransfer'
+		'Gui.AboutButton'           = 'About'
+		'Gui.AboutTitle'            = 'About sqmDataTransfer'
+		'Gui.AboutDescription'      = 'Transfers table data between SQL Server instances: metadata scripting, foreign key/index handling, chunked transfer of large tables with resumability, row-count reconciliation and HTML reports.'
 	}
 }
