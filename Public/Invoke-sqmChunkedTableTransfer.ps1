@@ -11,15 +11,24 @@
     discriminating column (typically a reporting/snapshot date such as "Stichtag") and transfers it
     one distinct value at a time:
 
-        1. Discovers every distinct -ChunkColumn value on the source (ORDER BY), capped at
-           -MaxChunkValues - this function is for a column with a modest number of distinct values
-           (dozens to a few hundred, e.g. monthly snapshots), not a near-continuous timestamp.
+        1. Discovers every distinct -ChunkColumn value on the source, together with its row count,
+           in a single GROUP BY scan (capped at -MaxChunkValues) - this function is for a column
+           with a modest number of distinct values (dozens to a few hundred, e.g. monthly
+           snapshots), not a near-continuous timestamp. A second single GROUP BY scan snapshots the
+           destination's per-chunk row counts up front (skipped entirely after -Truncate or when
+           the destination doesn't exist yet - both mean every chunk is empty).
         2. Optional -Truncate empties the destination table ONCE, up front - not per chunk, since
            TRUNCATE TABLE is table-wide regardless of any WHERE filter.
-        3. For each distinct value, compares row counts for just that slice (COUNT_BIG(*) WHERE
-           [ChunkColumn] = value) between source and destination. A slice whose counts already
-           match is skipped - this is what makes a re-run after a partial failure resume from
-           where it left off, without needing a row-level key.
+        3. For each distinct value, compares row counts for just that slice against the two
+           snapshots from step 1 - an in-memory lookup, not a live query. A slice whose counts
+           already match is skipped - this is what makes a re-run after a partial failure resume
+           from where it left off, without needing a row-level key. (Earlier versions ran a live
+           COUNT_BIG(*) WHERE [ChunkColumn] = value on both sides per chunk, before AND after the
+           copy - up to 4 full unindexed scans per chunk, since indexes are disabled for the whole
+           run. On a table with hundreds of chunks this made row-counting the dominant cost of the
+           entire run, ahead of the actual data copy. The post-copy comparison is likewise now a
+           single GROUP BY scan on the destination after the last chunk, not one COUNT_BIG(*) pair
+           per chunk.)
         4. Any slice that doesn't match gets a normal Invoke-sqmTableTransfer call scoped to just
            that value via -SourceQuery (SELECT * ... WHERE [ChunkColumn] = value) - safe
            regardless of column order or computed columns on either side, since Copy-sqmTableData
@@ -285,8 +294,17 @@ function Invoke-sqmChunkedTableTransfer
 
 	$columnList = '*'
 
-	$chunkQuery = "SELECT DISTINCT [$ChunkColumn] AS ChunkValue FROM $bracketed ORDER BY [$ChunkColumn]"
-	$chunkValues = @(Invoke-DbaQuery @srcConnParams -Query $chunkQuery -As PSObject -EnableException | Select-Object -ExpandProperty ChunkValue)
+	# --- Eine GROUP BY-Abfrage statt DISTINCT liefert die Zeilenzahl pro Chunk-Wert gleich mit -
+	# kostet keinen zusaetzlichen Scan (derselbe Scan haette DISTINCT sowieso gebraucht), macht aber
+	# den Skip-/Nachvergleich pro Chunk unten zu einem reinen Hashtable-Lookup statt einer eigenen
+	# COUNT_BIG(*)-Abfrage. Das war vorher die Hauptkostenquelle bei vielen Chunks: pro Chunk bis zu
+	# vier volle Scans (Skip-Check vor dem Kopieren: Quelle+Ziel, Vergleich danach: Quelle+Ziel), alle
+	# ohne Indexunterstuetzung, weil Indizes fuer den gesamten Lauf deaktiviert sind - bei einer
+	# grossen Tabelle mit hunderten Chunks hat das den RowCount-Anteil zur dominanten Kostenquelle
+	# gemacht, weit vor der eigentlichen Datenkopie.
+	$chunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $bracketed GROUP BY [$ChunkColumn] ORDER BY [$ChunkColumn]"
+	$chunkRows = @(Invoke-DbaQuery @srcConnParams -Query $chunkQuery -As PSObject -EnableException)
+	$chunkValues = @($chunkRows | Select-Object -ExpandProperty ChunkValue)
 
 	if ($chunkValues.Count -eq 0)
 	{
@@ -298,6 +316,11 @@ function Invoke-sqmChunkedTableTransfer
 		throw "'$ChunkColumn' hat $($chunkValues.Count) unterschiedliche Werte auf $qualified - mehr als -MaxChunkValues ($MaxChunkValues). " + `
 			"Vermutlich die falsche Spalte fuer chunk-weisen Transfer (zu feingranular) - eine groebere Spalte waehlen oder -MaxChunkValues explizit erhoehen."
 	}
+
+	# Schluessel ist der per Format-SqlLiteral formatierte Wert (siehe Funktion oben) - derselbe Text
+	# wird unten fuer jeden Chunk als Lookup-Key verwendet, unabhaengig vom .NET-Laufzeittyp.
+	$srcCountByChunk = @{}
+	foreach ($cr in $chunkRows) { $srcCountByChunk[(Format-SqlLiteral $cr.ChunkValue)] = [int64]$cr.Cnt }
 
 	$allResults = [System.Collections.Generic.List[PSCustomObject]]::new()
 
@@ -368,6 +391,35 @@ function Invoke-sqmChunkedTableTransfer
 		$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = '(alle)'; Step = 'DisableConstraints'; Status = 'Skipped'; Message = '-SkipConstraintHandling gesetzt.'; Timestamp = (Get-Date) })
 	}
 
+	# --- Ziel-Zeilenzahl pro Chunk EINMAL vorab per GROUP BY snapshotten statt pro Chunk live
+	# abzufragen - Grundlage sowohl fuer den Skip-Check als auch fuer die Entscheidung, ob ein Chunk
+	# Reste eines vorherigen Laufs hat (siehe unten). Nach -Truncate ist das Ziel per Definition leer,
+	# eine frisch angelegte Zieltabelle (ScriptMetadata) ebenso - in beiden Faellen lohnt sich der
+	# Scan nicht, jeder Chunk gilt dann als 0.
+	$dstCountByChunk = @{}
+	if (-not $Truncate)
+	{
+		$dstExistsForCount = @(Get-DbaDbTable @dstConnParams -Table $tableName -Schema $schemaName -ErrorAction SilentlyContinue).Count -gt 0
+		if ($dstExistsForCount)
+		{
+			try
+			{
+				$dstChunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $bracketed GROUP BY [$ChunkColumn]"
+				$dstChunkRows = @(Invoke-DbaQuery @dstConnParams -Query $dstChunkQuery -As PSObject -EnableException)
+				foreach ($dr in $dstChunkRows) { $dstCountByChunk[(Format-SqlLiteral $dr.ChunkValue)] = [int64]$dr.Cnt }
+			}
+			catch
+			{
+				# Snapshot fehlgeschlagen (z.B. Spalte fehlt auf dem Ziel) - jeder Chunk faellt unten
+				# auf 0 zurueck, was ihn wie einen frischen, noch nie kopierten Chunk behandelt statt
+				# den Lauf hier abzubrechen.
+				$dstCountByChunk = @{}
+			}
+		}
+	}
+
+	$processedChunks = [System.Collections.Generic.List[PSCustomObject]]::new()
+
 	$chunkIndex = 0
 	$chunkTotal = $chunkValues.Count
 
@@ -384,17 +436,11 @@ function Invoke-sqmChunkedTableTransfer
 			Write-Progress -Id 3 -Activity "Chunked Transfer: $qualified" -Status "Chunk $chunkIndex von $chunkTotal ($chunkLabel)" `
 							-PercentComplete ([math]::Floor((($chunkIndex - 1) / $chunkTotal) * 100))
 
-			# --- Skip-Check: dieser Chunk allein, per COUNT_BIG(*) WHERE [ChunkColumn] = Wert -
-			# macht einen erneuten Lauf nach einem Abbruch resumable, ganz ohne Primary-/Unique-Key.
-			try
-			{
-				$srcCount = [int64](Invoke-DbaQuery @srcConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
-				$dstCount = [int64](Invoke-DbaQuery @dstConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
-			}
-			catch
-			{
-				$srcCount = $null; $dstCount = $null
-			}
+			# --- Skip-Check aus dem Snapshot oben (kein Live-Query mehr) - macht einen erneuten Lauf
+			# nach einem Abbruch resumable, ganz ohne Primary-/Unique-Key.
+			$srcCount = $srcCountByChunk[$literal]
+			$dstCount = $dstCountByChunk[$literal]
+			if (-not $dstCount) { $dstCount = 0 }
 
 			if ($null -ne $srcCount -and $srcCount -eq $dstCount)
 			{
@@ -474,21 +520,45 @@ function Invoke-sqmChunkedTableTransfer
 				$allResults.Add([PSCustomObject]@{ Table = $r.Table; Chunk = "$chunkValue"; Step = $r.Step; Status = $r.Status; Message = $r.Message; Timestamp = $r.Timestamp })
 			}
 
+			# Der Nachvergleich fuer diesen Chunk wird NICHT hier live abgefragt (war vorher ein
+			# zweiter COUNT_BIG(*)-Scan beidseitig pro Chunk) - stattdessen unten, nach dem letzten
+			# Chunk, in einem einzigen GROUP BY-Scan fuer ALLE verarbeiteten Chunks auf einmal.
+			$processedChunks.Add([PSCustomObject]@{ ChunkValue = $chunkValue; Literal = $literal })
+		}
+
+		# --- Ein einziger GROUP BY-Scan auf dem Ziel statt eines COUNT_BIG(*)-Scans PRO verarbeitetem
+		# Chunk fuer den Nachvergleich - derselbe Kostengrund wie beim Skip-Check-Snapshot oben. Die
+		# Quellzahlen liegen bereits im initialen Snapshot vor (die Quelle aendert sich waehrend des
+		# Laufs nicht), nur das Ziel muss neu gelesen werden.
+		if ($processedChunks.Count -gt 0)
+		{
+			$finalDstCountByChunk = @{}
 			try
 			{
-				$srcCountAfter = [int64](Invoke-DbaQuery @srcConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
-				$dstCountAfter = [int64](Invoke-DbaQuery @dstConnParams -Query "SELECT COUNT_BIG(*) AS [RowCount] FROM $bracketed WHERE [$ChunkColumn] = $literal" -As PSObject -EnableException).RowCount
-				$chunkMatch = $srcCountAfter -eq $dstCountAfter
-				$allResults.Add([PSCustomObject]@{
-						Table = $qualified; Chunk = "$chunkValue"; Step = 'CompareRowCount'
-						Status = $(if ($chunkMatch) { 'Success' } else { 'Mismatch' })
-						Message = "Quelle=$srcCountAfter Ziel=$dstCountAfter Differenz=$($dstCountAfter - $srcCountAfter)"
-						Timestamp = (Get-Date)
-					})
+				$finalDstChunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $bracketed GROUP BY [$ChunkColumn]"
+				$finalDstChunkRows = @(Invoke-DbaQuery @dstConnParams -Query $finalDstChunkQuery -As PSObject -EnableException)
+				foreach ($dr in $finalDstChunkRows) { $finalDstCountByChunk[(Format-SqlLiteral $dr.ChunkValue)] = [int64]$dr.Cnt }
+
+				foreach ($pc in $processedChunks)
+				{
+					$srcCountAfter = $srcCountByChunk[$pc.Literal]
+					$dstCountAfter = $finalDstCountByChunk[$pc.Literal]
+					if (-not $dstCountAfter) { $dstCountAfter = 0 }
+					$chunkMatch = $srcCountAfter -eq $dstCountAfter
+					$allResults.Add([PSCustomObject]@{
+							Table = $qualified; Chunk = "$($pc.ChunkValue)"; Step = 'CompareRowCount'
+							Status = $(if ($chunkMatch) { 'Success' } else { 'Mismatch' })
+							Message = "Quelle=$srcCountAfter Ziel=$dstCountAfter Differenz=$($dstCountAfter - $srcCountAfter)"
+							Timestamp = (Get-Date)
+						})
+				}
 			}
 			catch
 			{
-				$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = "$chunkValue"; Step = 'CompareRowCount'; Status = 'Failed'; Message = $_.Exception.Message; Timestamp = (Get-Date) })
+				foreach ($pc in $processedChunks)
+				{
+					$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = "$($pc.ChunkValue)"; Step = 'CompareRowCount'; Status = 'Failed'; Message = $_.Exception.Message; Timestamp = (Get-Date) })
+				}
 			}
 		}
 	}

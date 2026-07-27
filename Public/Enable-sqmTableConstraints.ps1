@@ -93,6 +93,10 @@ WHERE fk.parent_object_id = OBJECT_ID(N'[$schemaName].[$tableName]')
 				{
 					try
 					{
+						# Log VOR der Ausfuehrung - bei -Revalidate (WITH CHECK) ist das ein voller Scan gegen
+						# die neu geladenen Daten und kann auf einer sehr grossen Tabelle lange dauern (siehe
+						# gleiche Begruendung beim Index-REBUILD unten).
+						Write-sqmTransferLog -Message "Start: $checkKeyword CHECK CONSTRAINT [$($fk.FkName)] auf $qualified" -FunctionName $functionName -Level 'INFO'
 						Invoke-DbaQuery @connParams -Query "ALTER TABLE [$schemaName].[$tableName] $checkKeyword CHECK CONSTRAINT [$($fk.FkName)]" -EnableException | Out-Null
 						$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'ForeignKey'; ObjectName = $fk.FkName; Action = 'Enable'; Status = 'Success' })
 						Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.FkEnabled' -FormatArgs @($fk.FkName, $qualified, $checkKeyword)) -FunctionName $functionName -Level 'INFO'
@@ -134,6 +138,11 @@ WHERE i.object_id = OBJECT_ID(N'[$schemaName].[$tableName]')
 				{
 					try
 					{
+						# Log VOR der Ausfuehrung, nicht erst danach - ein REBUILD auf einer sehr grossen
+						# Tabelle (ohne ONLINE) kann lange dauern, und ohne diesen Log-Eintrag sieht ein noch
+						# laufender Rebuild in der Log-Datei identisch zu einem echten Haenger aus. Mit ihm
+						# laesst sich am Zeitstempel ablesen, seit wann genau dieser Index laeuft.
+						Write-sqmTransferLog -Message "Start: ALTER INDEX [$($idx.IndexName)] ON $qualified REBUILD" -FunctionName $functionName -Level 'INFO'
 						Invoke-DbaQuery @connParams -Query "ALTER INDEX [$($idx.IndexName)] ON [$schemaName].[$tableName] REBUILD" -EnableException | Out-Null
 						$results.Add([PSCustomObject]@{ Table = $qualified; ObjectType = 'Index'; ObjectName = $idx.IndexName; Action = 'Enable'; Status = 'Success' })
 						Write-sqmTransferLog -Message (Get-sqmTransferString -Key 'Constraints.IdxEnabled' -FormatArgs @($idx.IndexName, $qualified)) -FunctionName $functionName -Level 'INFO'

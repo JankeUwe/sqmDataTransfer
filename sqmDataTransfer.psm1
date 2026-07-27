@@ -16,8 +16,11 @@ $script:sqmtModuleConfig = @{
 	# Self-signed Zertifikate (SQL 2022+ / neuere Microsoft.Data.SqlClient) schlagen
 	# sonst mit "certificate chain was issued by an authority that is not trusted" fehl.
 	TrustServerCertificate = $true
-	# Standard-Batchgroesse fuer Copy-sqmTableData (Copy-DbaDbTableData -BatchSize).
-	DefaultBatchSize       = 200000
+	# Standard-Batchgroesse fuer Copy-sqmTableData (Copy-DbaDbTableData -BatchSize) - 500k hat sich
+	# in der Praxis (grosse Chunk-Transfers) gegenueber 200k als schneller erwiesen: weniger
+	# Round-Trips/Transaktions-Overhead pro Zeile, ohne die Log-/Speicherbelastung von noch
+	# groesseren Batches.
+	DefaultBatchSize       = 500000
 	# Ab dieser Quell-Zeilenzahl warnt Invoke-sqmTableTransfer (nicht-chunked Aufruf) mit einem
 	# fertigen Invoke-sqmChunkedTableTransfer-Befehlsvorschlag statt die Tabelle stillschweigend
 	# als einzelnen All-or-nothing-Copy zu behandeln.

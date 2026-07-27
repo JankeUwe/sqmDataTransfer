@@ -1,5 +1,38 @@
 # sqmDataTransfer — Changelog
 
+## [0.1.14.0] — 2026-07-27
+
+### Chunked transfer: row-count checks were the dominant cost, not the data copy
+
+Real-world testing on a large table surfaced that `Invoke-sqmChunkedTableTransfer` spent most of
+its time on row counting, not copying data. Each chunk ran up to four live `COUNT_BIG(*) WHERE
+[ChunkColumn] = value` scans (skip-check before the copy: source+destination, verification after:
+source+destination) - all without index support, since indexes are disabled for the whole run. On
+a table with hundreds of chunks this made the row-count part dominate the entire run.
+
+Replaced all of that with three snapshots taken once, not per chunk: the source's per-chunk counts
+come free from the same `GROUP BY` query that already replaced the old `DISTINCT` chunk-value
+lookup; the destination's per-chunk counts are snapshotted once before the loop (skipped entirely
+after `-Truncate` or when the destination doesn't exist yet); and the post-copy verification is one
+more destination `GROUP BY` scan after the last chunk, compared in-memory against the source
+snapshot. Skip-checks and cleanup-needed decisions during the loop are now pure hashtable lookups -
+no per-chunk query at all.
+
+### Default BatchSize raised from 200,000 to 500,000 rows
+
+Further real-world testing found 500k rows/batch faster than 200k on large chunked transfers -
+fewer round-trips per row without the memory/log pressure of going even larger. Applied
+consistently everywhere the default is read (module config, every function's fallback, the GUI's
+initial batch-size field).
+
+### Enable-sqmTableConstraints now logs before each REBUILD/CHECK, not just after
+
+A disabled non-clustered index REBUILD (or an FK re-enable with `-Revalidate`, i.e. `WITH CHECK`)
+on a very large table can legitimately take a long time. Previously the log only gained an entry
+once each statement finished, so a run that was still working looked identical to a genuine hang -
+there was no way to tell from the log which object was in progress or since when. Added a "Start:"
+log line immediately before each `ALTER INDEX ... REBUILD` / `... CHECK CONSTRAINT` statement.
+
 ## [0.1.13.0] — 2026-07-26
 
 ### Copyable large-table dialog instead of a MessageBox
