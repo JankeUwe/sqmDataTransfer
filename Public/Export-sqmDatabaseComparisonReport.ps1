@@ -90,6 +90,13 @@ function Export-sqmDatabaseComparisonReport
 	$missingSrcCount = @($sorted | Where-Object Status -eq 'MissingOnSource').Count
 	$openCount = $totalTables - $matchCount
 
+	[Int64]$totalRowsTransferred = 0
+	foreach ($c in $sorted)
+	{
+		if ($null -ne $c.DestinationRows) { $totalRowsTransferred += [Int64]$c.DestinationRows }
+	}
+	$totalRowsTransferredText = '{0:N0}' -f $totalRowsTransferred
+
 	$rowsHtml = New-Object System.Text.StringBuilder
 	if ($totalTables -eq 0)
 	{
@@ -158,6 +165,7 @@ footer{margin-top:28px;color:var(--mut);font-size:12px}
 
 <div class="chips">
     <div class="chip"><b>$totalTables</b> Tabelle(n) gesamt</div>
+    <div class="chip"><b>$totalRowsTransferredText</b> Zeilen gesamt übertragen</div>
     <div class="chip ok"><b>$matchCount</b> vollstaendig</div>
     <div class="chip $(if ($openCount -gt 0) { 'err' } else { 'ok' })"><b>$openCount</b> noch offen</div>
     <div class="chip $(if ($mismatchCount -gt 0) { 'warn' } else { 'ok' })"><b>$mismatchCount</b> Abweichung(en)</div>
