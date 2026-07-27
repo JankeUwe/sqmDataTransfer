@@ -1,5 +1,42 @@
 # sqmDataTransfer — Changelog
 
+## [0.1.16.0] — 2026-07-27
+
+### Fix: silent destination row-count snapshot failure could have caused full-table duplicate copy
+
+Found while investigating a real 500M-row chunked transfer where no `COUNT_BIG`/`GROUP BY` query
+was visible against the destination via `sp_WhoIsActive`. Root cause: the 0.1.14.0 destination
+per-chunk snapshot (`GROUP BY [ChunkColumn]`) had no `-QueryTimeout`, so it inherited ADO.NET's
+30-second default - on a large table with non-clustered indexes already disabled for the run, this
+scan can easily exceed 30 seconds and time out. On failure, the code silently fell back to an
+*empty* hashtable, which makes every chunk look like "never copied" (`dstCount = 0`) - on a
+destination table that already holds real data from a prior run, that would have caused every
+already-complete chunk to be copied again on top of the existing rows, doubling the table, with no
+error or warning anywhere.
+
+Fixed two ways: (1) the snapshot queries (source, destination pre-loop, destination post-loop) now
+carry an explicit `-QueryTimeout 3600` instead of relying on the ADO.NET default; (2) a failed
+destination snapshot now throws immediately, aborting the run before any chunk is touched, instead
+of silently defaulting to "target is empty." Verified: in the reported case the destination was
+170k rows *short* of the source (not over), which itself confirms no duplication had occurred -
+but the silent-failure path was real and has been closed for future runs. Also verified against a
+forced destination schema mismatch: the run now aborts cleanly with zero rows touched instead of
+proceeding on a bad assumption.
+
+## [0.1.15.0] — 2026-07-27
+
+### Progress feedback went silent for chunk-sized copies after the 0.1.14.0 BatchSize bump
+
+`Copy-sqmTableData`'s `-NotifyAfter` (how often the live `Write-Progress` row-count ticks during a
+copy) defaulted to whatever `-BatchSize` was. Raising the default `BatchSize` to 500,000 in
+0.1.14.0 meant a single chunk from `Invoke-sqmChunkedTableTransfer` - normally far smaller than
+500k rows - never crossed that threshold, so the `SqlRowsCopied` notification never fired at all
+during the chunk's copy. The data itself was never affected (verified: a 90,000-row test copy
+landed all 90,000 rows correctly either way) - only the live feedback went quiet, making a chunk
+that was actually copying correctly look like nothing was happening until it finished. `NotifyAfter`
+now defaults to the smaller of `-BatchSize` and 25,000, decoupling progress granularity from the
+batch commit size.
+
 ## [0.1.14.0] — 2026-07-27
 
 ### Chunked transfer: row-count checks were the dominant cost, not the data copy

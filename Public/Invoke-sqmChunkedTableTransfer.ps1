@@ -303,7 +303,7 @@ function Invoke-sqmChunkedTableTransfer
 	# grossen Tabelle mit hunderten Chunks hat das den RowCount-Anteil zur dominanten Kostenquelle
 	# gemacht, weit vor der eigentlichen Datenkopie.
 	$chunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $bracketed GROUP BY [$ChunkColumn] ORDER BY [$ChunkColumn]"
-	$chunkRows = @(Invoke-DbaQuery @srcConnParams -Query $chunkQuery -As PSObject -EnableException)
+	$chunkRows = @(Invoke-DbaQuery @srcConnParams -Query $chunkQuery -As PSObject -EnableException -QueryTimeout 3600)
 	$chunkValues = @($chunkRows | Select-Object -ExpandProperty ChunkValue)
 
 	if ($chunkValues.Count -eq 0)
@@ -404,16 +404,23 @@ function Invoke-sqmChunkedTableTransfer
 		{
 			try
 			{
+				# -QueryTimeout: ohne diesen greift ADO.NETs Standard von 30s - auf einer sehr grossen
+				# Tabelle mit bereits deaktivierten Non-Clustered-Indizes (siehe Disable-Block oben) ist
+				# dieser GROUP BY-Scan je nach Clustered-Index-Abdeckung potenziell ein voller Scan, der
+				# laenger als 30s dauern kann. Ein Timeout hier darf NICHT einfach als "Ziel ist leer"
+				# behandelt werden (siehe catch unten) - genau das waere der gefaehrliche Default.
 				$dstChunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $bracketed GROUP BY [$ChunkColumn]"
-				$dstChunkRows = @(Invoke-DbaQuery @dstConnParams -Query $dstChunkQuery -As PSObject -EnableException)
+				$dstChunkRows = @(Invoke-DbaQuery @dstConnParams -Query $dstChunkQuery -As PSObject -EnableException -QueryTimeout 3600)
 				foreach ($dr in $dstChunkRows) { $dstCountByChunk[(Format-SqlLiteral $dr.ChunkValue)] = [int64]$dr.Cnt }
 			}
 			catch
 			{
-				# Snapshot fehlgeschlagen (z.B. Spalte fehlt auf dem Ziel) - jeder Chunk faellt unten
-				# auf 0 zurueck, was ihn wie einen frischen, noch nie kopierten Chunk behandelt statt
-				# den Lauf hier abzubrechen.
-				$dstCountByChunk = @{}
+				# NICHT still auf eine leere Hashtable zurueckfallen: das wuerde jeden Chunk unten wie
+				# einen frischen, noch nie kopierten Chunk behandeln - auf einer Zieltabelle, die aus
+				# einem vorherigen Lauf bereits echte Daten enthaelt, fuehrt das zum kompletten
+				# Doppelt-Einfuegen JEDES Chunks statt nur der tatsaechlich fehlenden. Ohne verlaessliche
+				# Kenntnis des Ziel-Zustands ist Abbruch die einzig sichere Reaktion.
+				throw "Snapshot der Ziel-Zeilenzahl pro Chunk fuer $qualified auf '$Destination'.'$DestinationDatabase' fehlgeschlagen: $($_.Exception.Message) - Abbruch, um Doppelt-Kopieren bereits vorhandener Chunks zu verhindern. Ursache pruefen (Berechtigungen, Timeout, Spalte '$ChunkColumn' auf dem Ziel) und erneut versuchen."
 			}
 		}
 	}
@@ -536,7 +543,7 @@ function Invoke-sqmChunkedTableTransfer
 			try
 			{
 				$finalDstChunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $bracketed GROUP BY [$ChunkColumn]"
-				$finalDstChunkRows = @(Invoke-DbaQuery @dstConnParams -Query $finalDstChunkQuery -As PSObject -EnableException)
+				$finalDstChunkRows = @(Invoke-DbaQuery @dstConnParams -Query $finalDstChunkQuery -As PSObject -EnableException -QueryTimeout 3600)
 				foreach ($dr in $finalDstChunkRows) { $finalDstCountByChunk[(Format-SqlLiteral $dr.ChunkValue)] = [int64]$dr.Cnt }
 
 				foreach ($pc in $processedChunks)

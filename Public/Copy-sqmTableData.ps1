@@ -57,8 +57,13 @@
 
 .PARAMETER NotifyAfter
     Rows per progress update (Write-Progress) while a table is copying - useful when watching a
-    long transfer live in the console. Default: same as -BatchSize. Progress can be silenced with
-    the standard -ProgressAction SilentlyContinue common parameter.
+    long transfer live in the console. Default: the smaller of -BatchSize and 25,000 - deliberately
+    NOT just -BatchSize (that was the default through 0.1.14.0): a chunk from
+    Invoke-sqmChunkedTableTransfer is typically far smaller than the (now 500,000-row) default
+    batch size, so tying the two together meant the SqlRowsCopied notification never fired at all
+    within a chunk - the whole chunk looked like nothing was happening until it finished, even
+    though the copy itself was correct. Progress can be silenced with the standard
+    -ProgressAction SilentlyContinue common parameter.
 
 .PARAMETER ContinueOnError
     Continue with the next table on error.
@@ -132,7 +137,11 @@ function Copy-sqmTableData
 		$BatchSize = Get-sqmTransferConfig -Key 'DefaultBatchSize'
 		if (-not $BatchSize) { $BatchSize = 500000 }
 	}
-	if (-not $PSBoundParameters.ContainsKey('NotifyAfter')) { $NotifyAfter = $BatchSize }
+	# Bewusst NICHT einfach = $BatchSize (siehe .PARAMETER NotifyAfter oben) - ein Chunk aus
+	# Invoke-sqmChunkedTableTransfer ist typischerweise weit kleiner als die (jetzt 500.000 Zeilen
+	# grosse) Standard-Batchgroesse, wodurch die SqlRowsCopied-Benachrichtigung innerhalb eines
+	# Chunks nie gefeuert hat - der ganze Chunk sah nach "keine Aktivitaet" aus, bis er fertig war.
+	if (-not $PSBoundParameters.ContainsKey('NotifyAfter')) { $NotifyAfter = [Math]::Min($BatchSize, 25000) }
 
 	$results = [System.Collections.Generic.List[PSCustomObject]]::new()
 	$rowsCopiedPattern = 'adjusted total rows copied = (\d+)'
