@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Executes previously scripted table-metadata batches against a target instance/database.
 

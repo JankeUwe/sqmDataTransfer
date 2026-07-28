@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Prueft, ob der Logging-Pfad existiert und beschreibbar ist.
 

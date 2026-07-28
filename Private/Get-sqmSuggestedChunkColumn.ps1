@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Suggests a -ChunkColumn candidate for a table, from metadata only - no data scan.
 

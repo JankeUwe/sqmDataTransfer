@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Scripts the DDL (CREATE TABLE, primary key, indexes, foreign keys, defaults, checks) of one
     or more tables from a source instance/database - together with anything else required for the

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Builds a self-contained HTML report for a table transfer run: which tables were processed
     (and any that are missing/failed), plus a source-vs-destination row-count comparison.

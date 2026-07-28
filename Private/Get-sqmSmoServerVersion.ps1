@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Maps a SQL Server VersionMajor/VersionMinor pair to the corresponding SMO
     ScriptingOptions.TargetServerVersion enum value.

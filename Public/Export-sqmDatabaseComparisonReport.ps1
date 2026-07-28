@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Builds a self-contained HTML report showing, for every table between a source and destination
     database, whether the transfer is complete or still missing/mismatched.

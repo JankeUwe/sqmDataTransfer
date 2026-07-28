@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Re-enables foreign keys and non-clustered indexes on one or more tables after a bulk data
     transfer.

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Orchestrates a full table data transfer between two SQL Server instances.
 

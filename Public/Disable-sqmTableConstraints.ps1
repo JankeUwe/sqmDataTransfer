@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Disables foreign keys and/or non-clustered indexes on one or more tables before a bulk data
     transfer.

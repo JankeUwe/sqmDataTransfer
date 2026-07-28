@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Bulk-copies table data from a source instance/database to a target instance/database.
 

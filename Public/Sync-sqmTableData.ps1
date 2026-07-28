@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Synchronizes table data between two SQL Server instances by transferring only rows that are
     new, changed, or (optionally) deleted since the last transfer.

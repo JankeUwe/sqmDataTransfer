@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Returns the current sqmDataTransfer module configuration.
 

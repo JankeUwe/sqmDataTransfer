@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Opens a generated HTML report in the default browser, unless -NoOpen is given.
 

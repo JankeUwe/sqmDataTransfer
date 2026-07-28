@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Scripts table metadata from a source instance and creates it on a target instance in one call.
 

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Schreibt eine Lognachricht in die tagesaktuelle Logdatei der Funktion.
 

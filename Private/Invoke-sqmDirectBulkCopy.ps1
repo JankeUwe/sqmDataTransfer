@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Bulk-copies a custom query's result set into a destination table, mapping columns by NAME.
 

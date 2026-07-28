@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Compares row counts between a source and a target table (or set of tables).
 
