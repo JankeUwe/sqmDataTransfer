@@ -11,7 +11,7 @@
 	RootModule			   = 'sqmDataTransfer.psm1'
 
 	# Version number of this module.
-	ModuleVersion		   = '0.1.17.1'
+	ModuleVersion		   = '0.1.18.0'
 
 	# ID used to uniquely identify this module
 	GUID				   = '0a8cb3da-acb1-45c5-afb7-85759e11c89d'
@@ -80,6 +80,7 @@
 		'Sync-sqmTableData',
 		'Invoke-sqmTableTransfer',
 		'Invoke-sqmChunkedTableTransfer',
+		'Get-sqmChunkColumnCandidate',
 		'Show-sqmTableTransferGui'
 	)
 

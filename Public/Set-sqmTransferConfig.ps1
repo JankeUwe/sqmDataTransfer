@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Sets one or more configuration values for the sqmDataTransfer module.
 
@@ -31,6 +31,13 @@
     (skipping already-complete chunks) - on an empty or barely-filled destination there is nothing
     to resume, and a plain all-or-nothing copy is simply faster (no per-chunk overhead). Default: 30.
 
+.PARAMETER MaxChunkValueCeiling
+    Upper bound on the chunk count that Invoke-sqmChunkedTableTransfer accepts when -MaxChunkValues
+    was not passed explicitly. Without an explicit value the function uses the number of distinct
+    chunk-column values it actually found, up to this ceiling, instead of failing against a fixed
+    default and forcing a second attempt with the right number. Above the ceiling the column is too
+    fine-grained (approaching a timestamp) and the run aborts with an explanation. Default: 2000.
+
 .PARAMETER PassThru
     Returns the updated configuration as an object.
 
@@ -59,6 +66,9 @@ function Set-sqmTransferConfig
 		[Parameter(Mandatory = $false)]
 		[ValidateRange(0, 100)]
 		[int]$ChunkAdviceMinExistingPercent,
+		[Parameter(Mandatory = $false)]
+		[ValidateRange(2, [int]::MaxValue)]
+		[int]$MaxChunkValueCeiling,
 		[Parameter(Mandatory = $false)]
 		[switch]$PassThru
 	)
@@ -143,6 +153,14 @@ function Set-sqmTransferConfig
 		if ($PSCmdlet.ShouldProcess('sqmtModuleConfig', "ChunkAdviceMinExistingPercent = $ChunkAdviceMinExistingPercent"))
 		{
 			$globalConfig['ChunkAdviceMinExistingPercent'] = $ChunkAdviceMinExistingPercent
+			$updated = $true
+		}
+	}
+	if ($PSBoundParameters.ContainsKey('MaxChunkValueCeiling'))
+	{
+		if ($PSCmdlet.ShouldProcess('sqmtModuleConfig', "MaxChunkValueCeiling = $MaxChunkValueCeiling"))
+		{
+			$globalConfig['MaxChunkValueCeiling'] = $MaxChunkValueCeiling
 			$updated = $true
 		}
 	}

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Transfers one large table in independently retryable chunks, one call per distinct value of a
     chunking column, instead of a single all-or-nothing copy.
@@ -63,10 +63,25 @@
     Column to split the transfer on. Its distinct values (as they exist on the source) become the
     chunk boundaries - one Invoke-sqmTableTransfer call per value.
 
+    OPTIONAL. Omit it and the column is detected automatically via Get-sqmChunkColumnCandidate:
+    date-typed and period-named columns are ranked by naming convention (Stichtag, ReportingDate,
+    Dat_/dtm prefixes first) and by how many chunks each would produce, estimated from the column's
+    statistics histogram - metadata only, no table scan. The chosen column, its estimated chunk
+    count and the reason are written to the log, so an automatic choice stays reviewable. If no
+    candidate qualifies, the function throws and names what it rejected and why, rather than
+    guessing.
+
 .PARAMETER MaxChunkValues
-    Safety cap on the number of distinct -ChunkColumn values this function will process. Default:
-    500. Throws before starting if the source has more - a near-continuous column (e.g. an exact
-    timestamp) is the wrong choice for -ChunkColumn and would produce thousands of tiny calls.
+    Safety cap on the number of distinct -ChunkColumn values this function will process. A
+    near-continuous column (e.g. an exact timestamp) is the wrong choice for -ChunkColumn and would
+    produce thousands of tiny calls.
+
+    OPTIONAL. Omit it and the cap is the module's MaxChunkValueCeiling (default 2000): the actual
+    number of distinct values found is accepted up to that ceiling. The previous fixed default of
+    500 aborted an otherwise perfectly fine run on a table with, say, 800 monthly values and forced
+    a second attempt with the right number - the count is already known from the GROUP BY the
+    function runs anyway, so there is nothing to guess. Pass an explicit value to override, or
+    Set-sqmTransferConfig -MaxChunkValueCeiling to change it permanently.
 
 .PARAMETER Truncate
     Empty the destination table once, before the first chunk - not per chunk (see DESCRIPTION).
@@ -143,6 +158,14 @@
     Transfers ACC_ATOM_GUV_PLUS one Stichtag at a time. If interrupted, re-running the identical
     command (without -Truncate) skips every Stichtag that already matches and only copies the rest.
 
+.EXAMPLE
+    Invoke-sqmChunkedTableTransfer -Source SQL01 -SourceDatabase DWH `
+        -Destination SQL02 -DestinationDatabase DWH -Table dbo.Umsatz
+
+    Same run without -ChunkColumn and without -MaxChunkValues: the chunk column is detected from
+    the table's metadata and statistics, and the chunk count is taken from what is actually there.
+    Check the log line "Chunk-Spalte automatisch gewaehlt" to see which column was picked and why.
+
 .NOTES
     Prerequisites: dbatools, Invoke-sqmTableTransfer, Export-sqmTransferReport.
     No primary/unique key is required on the table - resumability is per chunk value, not per row.
@@ -162,10 +185,10 @@ function Invoke-sqmChunkedTableTransfer
 		[string]$DestinationDatabase,
 		[Parameter(Mandatory = $true)]
 		[string]$Table,
-		[Parameter(Mandatory = $true)]
+		[Parameter(Mandatory = $false)]
 		[string]$ChunkColumn,
 		[Parameter(Mandatory = $false)]
-		[int]$MaxChunkValues = 500,
+		[int]$MaxChunkValues,
 		[Parameter(Mandatory = $false)]
 		[switch]$Truncate,
 		[Parameter(Mandatory = $false)]
@@ -243,6 +266,51 @@ function Invoke-sqmChunkedTableTransfer
 		return "$value"
 	}
 
+	# --- Chunk-Spalte automatisch bestimmen, wenn keine angegeben wurde -------------------------
+	# Get-sqmChunkColumnCandidate arbeitet rein auf Metadaten und Statistiken (kein Tabellenscan),
+	# kostet also auf einer 344-Mio-Zeilen-Tabelle dasselbe wie auf einer leeren. Die Auswahl wird
+	# protokolliert - eine automatisch gewaehlte Spalte, die niemand nachvollziehen kann, waere
+	# schlimmer als gar keine Automatik.
+	$chunkColumnAutoDetected = $false
+	if ([string]::IsNullOrWhiteSpace($ChunkColumn))
+	{
+		$candidates = @(Get-sqmChunkColumnCandidate -SqlInstance $Source -Database $SourceDatabase -Table $Table `
+													-SqlCredential $srcCred -MaxChunkValues $MaxChunkValues -IncludeUnsuitable)
+		$usable = @($candidates | Where-Object { $_.Suitable })
+
+		if ($usable.Count -eq 0)
+		{
+			$detail = if ($candidates.Count -gt 0)
+			{
+				' Geprueft: ' + (($candidates | ForEach-Object { "[$($_.ColumnName)] $($_.Reason)" }) -join ' ')
+			}
+			else { ' Es gibt weder eine Datums- noch eine Perioden-Spalte auf dieser Tabelle.' }
+
+			throw "Fuer $qualified auf '$Source'.'$SourceDatabase' konnte keine geeignete Chunk-Spalte ermittelt werden - bitte -ChunkColumn explizit angeben.$detail"
+		}
+
+		$ChunkColumn = $usable[0].ColumnName
+		$chunkColumnAutoDetected = $true
+		$autoMessage = "Chunk-Spalte automatisch gewaehlt: [$ChunkColumn] ($($usable[0].DataType), geschaetzt $($usable[0].EstimatedDistinctValues) Chunk(s), " + `
+		"ca. $($usable[0].AvgRowsPerChunk) Zeile(n) pro Chunk, Quelle der Schaetzung: $($usable[0].EstimateSource))."
+		Write-Verbose $autoMessage
+		Write-sqmTransferLog -Message $autoMessage -FunctionName $functionName -Level 'INFO'
+	}
+
+	# --- MaxChunkValues automatisch bestimmen, wenn nicht explizit gesetzt ----------------------
+	# Die GROUP BY-Abfrage weiter unten liefert die tatsaechliche Anzahl unterschiedlicher Werte
+	# ohnehin. Ein fester Default (frueher 500) hat einen Lauf an einer Tabelle mit z.B. 800
+	# Monatswerten abgebrochen und einen zweiten Anlauf mit passender Zahl erzwungen, obwohl die
+	# Spalte voellig in Ordnung war. Ohne expliziten Wert gilt daher die Obergrenze aus der
+	# Modulkonfiguration: alles darunter wird akzeptiert, alles darueber ist wirklich zu
+	# feingranular und bricht mit Begruendung ab.
+	$maxChunkValuesAutomatic = -not $PSBoundParameters.ContainsKey('MaxChunkValues') -or $MaxChunkValues -le 0
+	if ($maxChunkValuesAutomatic)
+	{
+		$MaxChunkValues = Get-sqmTransferConfig -Key 'MaxChunkValueCeiling'
+		if (-not $MaxChunkValues) { $MaxChunkValues = 2000 }
+	}
+
 	Write-sqmTransferLog -Message "Invoke-sqmChunkedTableTransfer: '$Source'.'$SourceDatabase'.$qualified -> '$Destination'.'$DestinationDatabase' per '$ChunkColumn'" `
 						  -FunctionName $functionName -Level 'INFO'
 
@@ -318,8 +386,36 @@ function Invoke-sqmChunkedTableTransfer
 	}
 	if ($chunkValues.Count -gt $MaxChunkValues)
 	{
-		throw "'$ChunkColumn' hat $($chunkValues.Count) unterschiedliche Werte auf $qualified - mehr als -MaxChunkValues ($MaxChunkValues). " + `
-			"Vermutlich die falsche Spalte fuer chunk-weisen Transfer (zu feingranular) - eine groebere Spalte waehlen oder -MaxChunkValues explizit erhoehen."
+		$limitText = if ($maxChunkValuesAutomatic)
+		{
+			"mehr als die automatische Obergrenze MaxChunkValueCeiling ($MaxChunkValues). Mit -MaxChunkValues $($chunkValues.Count) " + `
+			"laesst sich das ueberstimmen, dauerhaft ueber Set-sqmTransferConfig -MaxChunkValueCeiling."
+		}
+		else
+		{
+			"mehr als das angegebene -MaxChunkValues ($MaxChunkValues)."
+		}
+		$columnText = if ($chunkColumnAutoDetected) { "die automatisch gewaehlte Spalte '$ChunkColumn'" } else { "'$ChunkColumn'" }
+		throw "$columnText hat $($chunkValues.Count) unterschiedliche Werte auf $qualified - $limitText " + `
+			"Bei so vielen Werten ist die Spalte fuer einen chunk-weisen Transfer vermutlich zu feingranular - eine groebere Spalte waehlen."
+	}
+
+	if ($chunkColumnAutoDetected)
+	{
+		# Die Schaetzung aus der Statistik gegen die jetzt bekannte Wirklichkeit halten. Weicht sie
+		# deutlich ab, ist die Statistik veraltet - das ist keine Stoerung (der Lauf arbeitet mit den
+		# echten Werten weiter), aber es erklaert, warum die GUI vorher eine andere Zahl angezeigt hat.
+		$estimated = $usable[0].EstimatedDistinctValues
+		if ($null -ne $estimated -and $estimated -gt 0)
+		{
+			$deviation = [math]::Abs($chunkValues.Count - $estimated) / [double]$estimated
+			if ($deviation -gt 0.2)
+			{
+				$msg = "Chunk-Anzahl fuer [$ChunkColumn]: tatsaechlich $($chunkValues.Count), aus der Statistik geschaetzt waren $estimated - die Statistik ist vermutlich veraltet. Der Lauf verwendet die tatsaechlichen Werte."
+				Write-Warning $msg
+				Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
+			}
+		}
 	}
 
 	# Schluessel ist der per Format-SqlLiteral formatierte Wert (siehe Funktion oben) - derselbe Text

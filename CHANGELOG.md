@@ -1,5 +1,92 @@
 # sqmDataTransfer — Changelog
 
+## [0.1.18.0] — 2026-07-28
+
+### Chunk-Spalte und Chunk-Anzahl werden automatisch ermittelt
+
+`Invoke-sqmChunkedTableTransfer` verlangte bisher zwingend `-ChunkColumn` und brach an einem festen
+`-MaxChunkValues` von 500 ab. Beides musste man vorher wissen: welche Spalte sich zum Aufteilen
+eignet, und wie viele unterschiedliche Werte sie hat. Eine an sich passende Spalte mit z.B. 800
+Monatswerten liess den Lauf scheitern und erzwang einen zweiten Anlauf mit der richtigen Zahl,
+obwohl die Anzahl aus dem `GROUP BY`, das die Funktion ohnehin ausfuehrt, langst bekannt war.
+
+Beide Parameter sind jetzt optional:
+
+- **`-ChunkColumn`** wird ueber die neue Funktion **`Get-sqmChunkColumnCandidate`** bestimmt. Sie
+  bewertet Datums- und Perioden-Spalten nach Namenskonvention (Stichtag, ReportingDate, `Dat_`/`dtm`
+  zuerst) und schaetzt fuer jede die Anzahl der Chunks aus dem Statistik-Histogramm der Spalte
+  (`sys.dm_db_stats_histogram`). Das ist eine reine Metadatenlektuere: auf einer Tabelle mit 344
+  Millionen Zeilen kostet sie dasselbe wie auf einer leeren, weshalb sie auch aus der GUI heraus
+  unbedenklich ist. Die gewaehlte Spalte, die geschaetzte Chunk-Anzahl und die Begruendung stehen im
+  Log; findet sich keine geeignete Spalte, bricht der Lauf ab und nennt, was er verworfen hat und
+  warum, statt zu raten. Weicht die Schaetzung spaeter um mehr als 20% von der tatsaechlichen Zahl
+  ab, weist eine Warnung auf die veraltete Statistik hin, der Lauf rechnet mit den echten Werten.
+- **`-MaxChunkValues`** nutzt ohne expliziten Wert die neue Konfigurationsgrenze
+  `MaxChunkValueCeiling` (Default 2000, ueber `Set-sqmTransferConfig` aenderbar). Die tatsaechlich
+  gefundene Anzahl wird bis zu dieser Grenze akzeptiert; darueber ist die Spalte wirklich zu
+  feingranular und der Abbruch nennt den Wert, mit dem sich das ueberstimmen liesse.
+
+`Get-sqmChunkColumnCandidate` kennt zusaetzlich `-Exact` fuer ein echtes
+`COUNT_BIG(DISTINCT ...)` je Kandidat. Das ist ein Vollscan der Spalte und nur dann sinnvoll, wenn
+die Schaetzung nahe an der Grenze liegt und die Entscheidung tatsaechlich davon abhaengt.
+
+### GUI bietet normalen Transfer und Chunk-Transfer zur Auswahl an
+
+Bisher konnte die GUI ausschliesslich den normalen All-or-nothing-Copy und hat bei einer sehr
+grossen Tabelle lediglich den passenden `Invoke-sqmChunkedTableTransfer`-Befehl zum Kopieren
+angeboten - ausfuehren musste man ihn in PowerShell. Die neue Gruppe "Transfermodus" bietet:
+
+- **Automatisch** (Vorgabe): entscheidet je Tabelle nach genau der Regel, nach der vorher nur die
+  Empfehlung ausgesprochen wurde (ueber `LargeTableRowThreshold` **und** Ziel bereits zu mindestens
+  `ChunkAdviceMinExistingPercent` befuellt), und zusaetzlich nur dann, wenn es fuer die Tabelle
+  ueberhaupt eine brauchbare Chunk-Spalte gibt. Alle uebrigen Tabellen laufen normal.
+- **Normal**: unveraendertes bisheriges Verhalten inklusive Hinweisdialog mit fertigem Befehl.
+- **Chunk-Transfer**: alle ausgewaehlten Tabellen laufen chunk-weise, eine Runde je Tabelle.
+
+Dazu ein Feld fuer die Chunk-Spalte mit Schaltflaeche "Erkennen". Leer bedeutet automatische
+Erkennung je Tabelle; eine feste Spalte wird nur uebernommen, wenn genau eine Tabelle ausgewaehlt
+ist, da ein Spaltenname sonst nicht zwangslaeufig auf jede ausgewaehlte Tabelle passt.
+
+### Fix: der GUI-Titel zeigte dauerhaft "v0.1.0.0"
+
+Die Modulversion wurde beim Laden per `Import-PowerShellDataFile` aus dem Manifest gelesen. Unter
+Windows PowerShell 5.1 ist das kein Cmdlet, sondern eine Funktion aus
+`Microsoft.PowerShell.Utility`, und die ist im Modulscope waehrend des Modulladens nicht
+zuverlaessig aufloesbar - je nach Startkontext des Prozesses (reproduzierbar ueber `Start-Process`,
+nicht bei direktem Aufruf) scheiterte der Aufruf mit `CommandNotFoundException`. Ein leeres `catch`
+verschluckte das vollstaendig, und die Version blieb still auf dem Platzhalter `0.1.0.0` stehen -
+sichtbar nur im Fenstertitel. Der Fehler wird jetzt nicht mehr verschluckt, und wenn der Befehl
+fehlt, liest ein zweiter Weg das Manifest ueber
+`[System.Management.Automation.Language.Parser]`, einen .NET-Typ, der keine Befehlsaufloesung
+braucht und deshalb in jedem Ladezustand funktioniert.
+
+### Fix: gemischte Ergebnisse konnten das Ergebnis-Grid zum Absturz bringen
+
+`ConvertTo-DataTable` in der GUI leitete die Spalten ausschliesslich aus dem ersten Ergebnisobjekt
+ab. Sobald ein Lauf Chunk- und Normal-Ergebnisse mischt - was mit dem Automatik-Modus zum Normalfall
+wird - hat die erste Zeile mit einer bis dahin unbekannten Eigenschaft beim Schreiben eine
+Ausnahme geworfen. Spalten werden jetzt fortlaufend ergaenzt.
+
+## [0.1.17.2] — 2026-07-28
+
+### Fix: fehlendes UTF-8-BOM verstuemmelte den Umlaut im HTML-Report
+
+Keine der 21 Quelldateien hatte ein UTF-8-BOM. Windows PowerShell 5.1 — die Zielplattform laut
+Manifest — interpretiert eine BOM-lose Datei als cp1252, nicht als UTF-8. In
+`Export-sqmTransferReport` und `Export-sqmDatabaseComparisonReport` steht je ein Umlaut in der
+Kopfzeile des erzeugten Berichts, der dadurch als `Zeilen gesamt Ã¼bertragen` im fertigen HTML
+landete. Unter PowerShell 7 war nichts zu sehen, weil dessen Default ohnehin UTF-8 ist. Alle
+Dateien tragen jetzt ein BOM, und der Pre-Push-Hook prueft das ab sofort.
+
+### Neu: Pre-Push-Hook und Tools/Test-DuplicateParameterBinding.ps1
+
+Das Modul hatte bisher als einziges der drei PowerShell-Module weder Hook noch CI, obwohl es die
+bisher heikelsten Fehler hatte. Der neue Hook prueft vor jedem Push unter Windows PowerShell 5.1
+**und** PowerShell 7: Parse aller Dateien in `Public` und `Private` (nicht nur einer
+Stichprobe), Modul-Import, Export der Kommandos, UTF-8-BOM sowie doppelte Parameterbindungen.
+Letzteres ist der Fehler aus 0.1.17.1, den kein Import-Test finden kann, weil er erst zur
+Aufrufzeit auftritt.
+
 ## [0.1.17.1] — 2026-07-28
 
 ### Fix: "parameter 'ErrorAction' is specified more than once" crash under Windows PowerShell 5.1

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Launches a graphical interface (WinForms) for sqmDataTransfer.
 
@@ -246,18 +246,22 @@ function Show-sqmTableTransferGui
 		}
 	}
 
+	# Spalten werden fortlaufend ergaenzt, nicht nur aus dem ersten Objekt abgeleitet: seit die GUI
+	# Chunk- und Normaltransfer in einem Lauf mischen kann, haben die Ergebniszeilen nicht mehr
+	# zwingend dieselbe Form. Eine Zeile mit einer bis dahin unbekannten Eigenschaft hat frueher
+	# beim Schreiben eine ArgumentException geworfen ("Spalte gehoert nicht zur Tabelle").
 	function ConvertTo-DataTable
 	{
 		param ([Parameter(ValueFromPipeline = $true)]$InputObject)
-		begin { $dt = New-Object System.Data.DataTable; $first = $true }
+		begin { $dt = New-Object System.Data.DataTable }
 		process
 		{
 			foreach ($obj in $InputObject)
 			{
-				if ($first)
+				if ($null -eq $obj) { continue }
+				foreach ($p in $obj.PSObject.Properties)
 				{
-					foreach ($p in $obj.PSObject.Properties) { $dt.Columns.Add($p.Name, [string]) | Out-Null }
-					$first = $false
+					if (-not $dt.Columns.Contains($p.Name)) { $dt.Columns.Add($p.Name, [string]) | Out-Null }
 				}
 				$row = $dt.NewRow()
 				foreach ($p in $obj.PSObject.Properties) { $row[$p.Name] = if ($null -eq $p.Value) { '' } else { "$($p.Value)" } }
@@ -274,7 +278,7 @@ function Show-sqmTableTransferGui
 	$Global:__sqmDataTransferGuiCtx.Form = $form
 	$guiYearSpan = "2026-$((Get-Date).ToString('yy'))"
 	$form.Text = "$(Get-sqmTransferString -Key 'Gui.Title')  v$(Get-sqmTransferConfig -Key 'ModuleVersion')   |   powershelldba.de - Janke (c) $guiYearSpan"
-	$form.Size = New-Object System.Drawing.Size(980, 926)
+	$form.Size = New-Object System.Drawing.Size(980, 992)
 	$form.StartPosition = 'CenterScreen'
 	$form.BackColor = $cPanel
 	$form.ForeColor = $cText
@@ -762,6 +766,131 @@ function Show-sqmTableTransferGui
 	$grpOpt.Controls.AddRange(@($chkScriptMeta, $chkFks, $chkIdx, $chkTriggers, $chkKeepIdentity, $chkTruncate, $chkRevalidate, $chkWhatIf, $chkSkipCompleted, $lblBatch, $numBatch))
 	$form.Controls.Add($grpOpt)
 
+	# --- Transfer mode -----------------------------------------------------------
+	# Bis 0.1.17.x konnte die GUI nur den normalen All-or-nothing-Copy und hat bei einer sehr
+	# grossen Tabelle lediglich den passenden Invoke-sqmChunkedTableTransfer-Befehl zum Kopieren
+	# angeboten - der Chunk-Transfer selbst musste in PowerShell laufen. Hier ist er jetzt direkt
+	# waehlbar. 'Automatisch' entscheidet je Tabelle nach derselben Regel, nach der vorher die
+	# Empfehlung ausgesprochen wurde (gross genug UND Ziel schon teilweise befuellt).
+	$grpMode = New-Object System.Windows.Forms.GroupBox
+	$grpMode.Text = Get-sqmTransferString -Key 'Gui.ModeGroup'
+	$grpMode.ForeColor = $cText
+	$grpMode.Location = New-Object System.Drawing.Point(12, 530)
+	$grpMode.Size = New-Object System.Drawing.Size(938, 62)
+	$grpMode.Anchor = 'Top,Left,Right'
+
+	$modeTip = New-Object System.Windows.Forms.ToolTip
+	$modeTip.AutoPopDelay = 20000
+	$modeTip.InitialDelay = 400
+
+	$rbModeAuto = New-Object System.Windows.Forms.RadioButton
+	$rbModeAuto.Text = Get-sqmTransferString -Key 'Gui.ModeAuto'
+	$rbModeAuto.ForeColor = $cText
+	$rbModeAuto.Checked = $true
+	$rbModeAuto.Location = New-Object System.Drawing.Point(15, 25)
+	$rbModeAuto.Size = New-Object System.Drawing.Size(120, 22)
+	$modeTip.SetToolTip($rbModeAuto, (Get-sqmTransferString -Key 'Gui.ModeAutoTip'))
+
+	$rbModeNormal = New-Object System.Windows.Forms.RadioButton
+	$rbModeNormal.Text = Get-sqmTransferString -Key 'Gui.ModeNormal'
+	$rbModeNormal.ForeColor = $cText
+	$rbModeNormal.Location = New-Object System.Drawing.Point(145, 25)
+	$rbModeNormal.Size = New-Object System.Drawing.Size(210, 22)
+	$modeTip.SetToolTip($rbModeNormal, (Get-sqmTransferString -Key 'Gui.ModeNormalTip'))
+
+	$rbModeChunk = New-Object System.Windows.Forms.RadioButton
+	$rbModeChunk.Text = Get-sqmTransferString -Key 'Gui.ModeChunk'
+	$rbModeChunk.ForeColor = $cText
+	$rbModeChunk.Location = New-Object System.Drawing.Point(365, 25)
+	$rbModeChunk.Size = New-Object System.Drawing.Size(230, 22)
+	$modeTip.SetToolTip($rbModeChunk, (Get-sqmTransferString -Key 'Gui.ModeChunkTip'))
+
+	$lblChunkColumn = New-Object System.Windows.Forms.Label
+	$lblChunkColumn.Text = Get-sqmTransferString -Key 'Gui.ChunkColumnLabel'
+	$lblChunkColumn.ForeColor = $cDim
+	$lblChunkColumn.Location = New-Object System.Drawing.Point(605, 27)
+	$lblChunkColumn.Size = New-Object System.Drawing.Size(90, 20)
+
+	$txtChunkColumn = New-Object System.Windows.Forms.TextBox
+	$txtChunkColumn.Location = New-Object System.Drawing.Point(695, 24)
+	$txtChunkColumn.Size = New-Object System.Drawing.Size(120, 22)
+	Style-TextBox $txtChunkColumn
+	$modeTip.SetToolTip($txtChunkColumn, (Get-sqmTransferString -Key 'Gui.ChunkColumnTip'))
+
+	$btnDetectChunk = New-Object System.Windows.Forms.Button
+	$btnDetectChunk.Text = Get-sqmTransferString -Key 'Gui.DetectChunkColumn'
+	$btnDetectChunk.Location = New-Object System.Drawing.Point(823, 23)
+	$btnDetectChunk.Size = New-Object System.Drawing.Size(100, 24)
+	Style-Button $btnDetectChunk
+	$modeTip.SetToolTip($btnDetectChunk, (Get-sqmTransferString -Key 'Gui.ChunkColumnTip'))
+
+	# Chunk-spezifische Bedienelemente nur dort aktiv, wo sie ueberhaupt wirken.
+	$syncModeControls = {
+		$chunkPossible = $rbModeChunk.Checked -or $rbModeAuto.Checked
+		$lblChunkColumn.Enabled = $chunkPossible
+		$txtChunkColumn.Enabled = $chunkPossible
+		$btnDetectChunk.Enabled = $chunkPossible
+	}.GetNewClosure()
+	$rbModeAuto.Add_CheckedChanged($syncModeControls)
+	$rbModeNormal.Add_CheckedChanged($syncModeControls)
+	$rbModeChunk.Add_CheckedChanged($syncModeControls)
+
+	# Erkennung laeuft ueber Get-sqmChunkColumnCandidate, also reine Metadaten/Statistik-Lektuere
+	# ohne Tabellenzugriff - deshalb ist sie hier direkt auf dem UI-Thread vertretbar, anders als
+	# ein COUNT_BIG(*) (siehe 0.1.9.0/0.1.10.0, wo genau solche Scans das Fenster eingefroren haben).
+	$btnDetectChunk.Add_Click({
+			$selected = @(foreach ($row in $dgvTables.Rows) { if ([bool]$row.Cells[0].Value) { $row.Cells[1].Value } })
+			if ($selected.Count -ne 1)
+			{
+				[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.DetectSelectOneTable'), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Information') | Out-Null
+				return
+			}
+			if (-not $srcPanel.Instance.Text -or -not $srcPanel.Database.Text)
+			{
+				[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.SpecifySourceAndDest'), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Warning') | Out-Null
+				return
+			}
+
+			$btnDetectChunk.Enabled = $false
+			$lblStatus.ForeColor = $cDim
+			$lblStatus.Text = Get-sqmTransferString -Key 'Gui.DetectRunning'
+			$form.Refresh()
+			[System.Windows.Forms.Application]::DoEvents()
+			try
+			{
+				$srcCred = Get-CredentialFromPanel $srcPanel
+				$candidates = @(Get-sqmChunkColumnCandidate -SqlInstance $srcPanel.Instance.Text -Database $srcPanel.Database.Text `
+														   -Table $selected[0] -SqlCredential $srcCred -IncludeUnsuitable)
+				$best = @($candidates | Where-Object { $_.Suitable }) | Select-Object -First 1
+				if ($best)
+				{
+					$txtChunkColumn.Text = $best.ColumnName
+					$lblStatus.ForeColor = $cOk
+					$lblStatus.Text = Get-sqmTransferString -Key 'Gui.DetectResult' -FormatArgs @($selected[0], $best.ColumnName, $best.EstimatedDistinctValues, $best.AvgRowsPerChunk)
+				}
+				else
+				{
+					$txtChunkColumn.Text = ''
+					$detail = if ($candidates.Count -gt 0) { (($candidates | ForEach-Object { "[$($_.ColumnName)] $($_.Reason)" }) -join ' ') } else { '-' }
+					$lblStatus.ForeColor = $cWarn
+					$lblStatus.Text = Get-sqmTransferString -Key 'Gui.DetectNone' -FormatArgs @($selected[0], $detail)
+				}
+			}
+			catch
+			{
+				$lblStatus.ForeColor = $cErr
+				$lblStatus.Text = Get-sqmTransferString -Key 'Gui.TransferError'
+				[System.Windows.Forms.MessageBox]::Show((Get-sqmTransferString -Key 'Gui.DetectFailed' -FormatArgs @($_.Exception.Message)), (Get-sqmTransferString -Key 'Gui.MessageBoxTitle'), 'OK', 'Error') | Out-Null
+			}
+			finally
+			{
+				$btnDetectChunk.Enabled = $true
+			}
+		})
+
+	$grpMode.Controls.AddRange(@($rbModeAuto, $rbModeNormal, $rbModeChunk, $lblChunkColumn, $txtChunkColumn, $btnDetectChunk))
+	$form.Controls.Add($grpMode)
+
 	# --- HTML report options -----------------------------------------------------
 	# Bericht pro Invoke-sqmTableTransfer-Aufruf ist per Checkbox abschaltbar (Gui.ReportPerRun) -
 	# bei tabellenweisem Vorgehen ueber ein grosses Set haeuft sich sonst ein Bericht pro Klick an,
@@ -770,7 +899,7 @@ function Show-sqmTableTransferGui
 	$grpReport = New-Object System.Windows.Forms.GroupBox
 	$grpReport.Text = Get-sqmTransferString -Key 'Gui.ReportGroup'
 	$grpReport.ForeColor = $cText
-	$grpReport.Location = New-Object System.Drawing.Point(12, 530)
+	$grpReport.Location = New-Object System.Drawing.Point(12, 596)
 	$grpReport.Size = New-Object System.Drawing.Size(938, 84)
 	$grpReport.Anchor = 'Top,Left,Right'
 
@@ -822,26 +951,26 @@ function Show-sqmTableTransferGui
 	$btnRun.Text = Get-sqmTransferString -Key 'Gui.RunButton'
 	Style-Button $btnRun
 	$btnRun.BackColor = $cAccent
-	$btnRun.Location = New-Object System.Drawing.Point(12, 626)
+	$btnRun.Location = New-Object System.Drawing.Point(12, 692)
 	$btnRun.Size = New-Object System.Drawing.Size(160, 32)
 
 	$btnClose = New-Object System.Windows.Forms.Button
 	$btnClose.Text = Get-sqmTransferString -Key 'Gui.CloseButton'
 	Style-Button $btnClose
-	$btnClose.Location = New-Object System.Drawing.Point(182, 626)
+	$btnClose.Location = New-Object System.Drawing.Point(182, 692)
 	$btnClose.Size = New-Object System.Drawing.Size(100, 32)
 	$btnClose.Add_Click({ $form.Close() })
 
 	$btnAbout = New-Object System.Windows.Forms.Button
 	$btnAbout.Text = Get-sqmTransferString -Key 'Gui.AboutButton'
 	Style-Button $btnAbout
-	$btnAbout.Location = New-Object System.Drawing.Point(292, 626)
+	$btnAbout.Location = New-Object System.Drawing.Point(292, 692)
 	$btnAbout.Size = New-Object System.Drawing.Size(90, 32)
 	$btnAbout.Add_Click({ Show-AboutDialog })
 
 	$lblStatus = New-Object System.Windows.Forms.Label
 	$lblStatus.Text = ''
-	$lblStatus.Location = New-Object System.Drawing.Point(392, 632)
+	$lblStatus.Location = New-Object System.Drawing.Point(392, 698)
 	$lblStatus.Size = New-Object System.Drawing.Size(558, 22)
 	$lblStatus.Anchor = 'Top,Left,Right'
 	$lblStatus.ForeColor = $cDim
@@ -851,12 +980,12 @@ function Show-sqmTableTransferGui
 	# --- Log output ----------------------------------------------------------------
 	$lblLog = New-Object System.Windows.Forms.Label
 	$lblLog.Text = Get-sqmTransferString -Key 'Gui.LogLabel'
-	$lblLog.Location = New-Object System.Drawing.Point(12, 666)
+	$lblLog.Location = New-Object System.Drawing.Point(12, 732)
 	$lblLog.Size = New-Object System.Drawing.Size(200, 20)
 	$lblLog.ForeColor = $cDim
 
 	$txtLog = New-Object System.Windows.Forms.TextBox
-	$txtLog.Location = New-Object System.Drawing.Point(12, 688)
+	$txtLog.Location = New-Object System.Drawing.Point(12, 754)
 	$txtLog.Size = New-Object System.Drawing.Size(938, 90)
 	$txtLog.Anchor = 'Top,Left,Right'
 	$txtLog.Multiline = $true
@@ -871,13 +1000,13 @@ function Show-sqmTableTransferGui
 	# --- Result grid -----------------------------------------------------------
 	$lblGrid = New-Object System.Windows.Forms.Label
 	$lblGrid.Text = Get-sqmTransferString -Key 'Gui.ResultLabel'
-	$lblGrid.Location = New-Object System.Drawing.Point(12, 784)
+	$lblGrid.Location = New-Object System.Drawing.Point(12, 850)
 	$lblGrid.Size = New-Object System.Drawing.Size(300, 20)
 	$lblGrid.ForeColor = $cDim
 	$lblGrid.Anchor = 'Bottom,Left'
 
 	$dgv = New-Object System.Windows.Forms.DataGridView
-	$dgv.Location = New-Object System.Drawing.Point(12, 806)
+	$dgv.Location = New-Object System.Drawing.Point(12, 872)
 	$dgv.Size = New-Object System.Drawing.Size(938, 70)
 	$dgv.Anchor = 'Bottom,Top,Left,Right'
 	$dgv.BackgroundColor = $cWindow
@@ -908,11 +1037,19 @@ function Show-sqmTableTransferGui
 			$srcCred = Get-CredentialFromPanel $srcPanel
 			$dstCred = Get-CredentialFromPanel $dstPanel
 
+			$transferMode = if ($rbModeChunk.Checked) { 'Chunk' } elseif ($rbModeNormal.Checked) { 'Normal' } else { 'Auto' }
+
+			# Tabellen, die im Automatik-Modus chunk-weise laufen sollen. Im Chunk-Modus sind das
+			# alle ausgewaehlten, im Normal-Modus keine.
+			$chunkTables = [System.Collections.Generic.List[string]]::new()
+			if ($transferMode -eq 'Chunk') { foreach ($t in $selectedTables) { $chunkTables.Add($t) } }
+
 			# Grosse-Tabelle-Vorabpruefung: Invoke-sqmTableTransfer warnt zwar selbst (siehe dort),
-			# aber erst NACH dem Transfer - hier VOR dem Start, damit man noch abbrechen und
-			# stattdessen den vorgeschlagenen Invoke-sqmChunkedTableTransfer-Befehl in PowerShell
-			# nutzen kann (die GUI selbst kann nicht chunken). Metadaten-Lookup pro ausgewaehlter
-			# Tabelle, kein Scan - eine fehlgeschlagene Pruefung darf den Transfer nicht verhindern.
+			# aber erst NACH dem Transfer - hier VOR dem Start. Im Normal-Modus fuehrt das wie bisher
+			# zum Hinweisdialog mit fertigem Befehl zum Kopieren; im Automatik-Modus entscheidet
+			# dieselbe Pruefung stattdessen direkt, welche Tabellen chunk-weise laufen. Metadaten-
+			# Lookup pro Tabelle, kein Scan - eine fehlgeschlagene Pruefung darf den Transfer nicht
+			# verhindern (dann laeuft die Tabelle eben normal, was nie falsch, nur langsamer ist).
 			try
 			{
 				$largeThreshold = Get-sqmTransferConfig -Key 'LargeTableRowThreshold'
@@ -925,7 +1062,7 @@ function Show-sqmTableTransferGui
 				if (-not $minExistingPercent) { $minExistingPercent = 30 }
 				$largeTableMessages = [System.Collections.Generic.List[string]]::new()
 				$largeTableCommands = [System.Collections.Generic.List[string]]::new()
-				foreach ($t in $selectedTables)
+				foreach ($t in ($(if ($transferMode -eq 'Chunk') { @() } else { $selectedTables })))
 				{
 					$schemaNameChk = 'dbo'; $tableNameChk = $t
 					if ($t -match '^(?<schema>[^.]+)\.(?<name>.+)$') { $schemaNameChk = $Matches['schema']; $tableNameChk = $Matches['name'] }
@@ -946,11 +1083,23 @@ function Show-sqmTableTransferGui
 
 						if ($existingPercent -ge $minExistingPercent)
 						{
-							$suggestedCol = Get-sqmSuggestedChunkColumn -SqlInstance $srcPanel.Instance.Text -Database $srcPanel.Database.Text -Table $t -SqlCredential $srcCred
-							$colText = if ($suggestedCol) { $suggestedCol } else { '<ChunkSpalte>' }
-							$cmdText = "Invoke-sqmChunkedTableTransfer -Source '$($srcPanel.Instance.Text)' -SourceDatabase '$($srcPanel.Database.Text)' -Destination '$($dstPanel.Instance.Text)' -DestinationDatabase '$($dstPanel.Database.Text)' -Table '$t' -ChunkColumn '$colText'"
-							$largeTableMessages.Add("$t ($('{0:N0}' -f [int64]$rc) Zeilen, Ziel bereits $('{0:N1}' -f $existingPercent)% befuellt):`r`n$cmdText")
-							$largeTableCommands.Add($cmdText)
+							if ($transferMode -eq 'Auto')
+							{
+								# Nur chunken, wenn es dafuer auch eine brauchbare Spalte gibt -
+								# sonst wuerde die Automatik eine Tabelle in einen Lauf schicken,
+								# der garantiert mit "keine geeignete Chunk-Spalte" abbricht.
+								$autoCandidate = @(Get-sqmChunkColumnCandidate -SqlInstance $srcPanel.Instance.Text -Database $srcPanel.Database.Text `
+																			  -Table $t -SqlCredential $srcCred) | Select-Object -First 1
+								if ($autoCandidate) { $chunkTables.Add($t) }
+							}
+							else
+							{
+								$suggestedCol = Get-sqmSuggestedChunkColumn -SqlInstance $srcPanel.Instance.Text -Database $srcPanel.Database.Text -Table $t -SqlCredential $srcCred
+								$colText = if ($suggestedCol) { $suggestedCol } else { '<ChunkSpalte>' }
+								$cmdText = "Invoke-sqmChunkedTableTransfer -Source '$($srcPanel.Instance.Text)' -SourceDatabase '$($srcPanel.Database.Text)' -Destination '$($dstPanel.Instance.Text)' -DestinationDatabase '$($dstPanel.Database.Text)' -Table '$t'"
+								$largeTableMessages.Add("$t ($('{0:N0}' -f [int64]$rc) Zeilen, Ziel bereits $('{0:N1}' -f $existingPercent)% befuellt, Chunk-Spalte: $colText):`r`n$cmdText")
+								$largeTableCommands.Add($cmdText)
+							}
 						}
 					}
 				}
@@ -961,6 +1110,13 @@ function Show-sqmTableTransferGui
 				}
 			}
 			catch { }
+
+			$normalTables = @($selectedTables | Where-Object { $chunkTables -notcontains $_ })
+			if ($transferMode -eq 'Auto' -and $chunkTables.Count -gt 0)
+			{
+				$lblStatus.ForeColor = $cDim
+				$lblStatus.Text = Get-sqmTransferString -Key 'Gui.AutoModeDecision' -FormatArgs @($chunkTables.Count, $normalTables.Count)
+			}
 
 			$btnRun.Enabled = $false
 			$lblStatus.Text = Get-sqmTransferString -Key 'Gui.TransferRunning'
@@ -976,7 +1132,7 @@ function Show-sqmTableTransferGui
 					SourceDatabase	      = $srcPanel.Database.Text
 					Destination		      = $dstPanel.Instance.Text
 					DestinationDatabase   = $dstPanel.Database.Text
-					Table				  = $selectedTables
+					Table				  = $normalTables
 					ScriptMetadata	      = $chkScriptMeta.Checked
 					SkipCompleted	      = $chkSkipCompleted.Checked
 					IncludeForeignKeys    = $chkFks.Checked
@@ -997,7 +1153,60 @@ function Show-sqmTableTransferGui
 				if ($srcCred) { $params['SourceCredential'] = $srcCred }
 				if ($dstCred) { $params['DestinationCredential'] = $dstCred }
 
-				$results = Invoke-sqmTableTransfer @params
+				$allResults = [System.Collections.Generic.List[PSObject]]::new()
+
+				# --- Chunk-weise Tabellen: eine Invoke-sqmChunkedTableTransfer-Runde je Tabelle.
+				# Die Funktion nimmt bewusst nur EINE Tabelle (Chunk-Spalte, Constraint-Handling und
+				# Zeilenabgleich sind tabellenspezifisch), also wird hier geschleift. -SkipCompleted
+				# gibt es dort nicht und wird auch nicht gebraucht: die Chunk-Logik erkennt bereits
+				# vollstaendige Chunks ohnehin selbst und ueberspringt sie.
+				$chunkIndex = 0
+				foreach ($chunkTable in $chunkTables)
+				{
+					$chunkIndex++
+					$lblStatus.ForeColor = $cDim
+					$lblStatus.Text = Get-sqmTransferString -Key 'Gui.ChunkRunning' -FormatArgs @($chunkTable, $chunkIndex, $chunkTables.Count)
+					$form.Refresh()
+					[System.Windows.Forms.Application]::DoEvents()
+
+					$chunkParams = @{}
+					foreach ($key in $params.Keys) { if ($key -ne 'SkipCompleted' -and $key -ne 'Table') { $chunkParams[$key] = $params[$key] } }
+					$chunkParams['Table'] = $chunkTable
+
+					# Feste Chunk-Spalte nur, wenn genau eine Tabelle ausgewaehlt ist - ein Spaltenname
+					# aus dem Feld passt sonst schlicht nicht zwangslaeufig auf jede Tabelle. Bei
+					# mehreren Tabellen erkennt Invoke-sqmChunkedTableTransfer je Tabelle selbst.
+					if ($txtChunkColumn.Text -and $selectedTables.Count -eq 1) { $chunkParams['ChunkColumn'] = $txtChunkColumn.Text }
+
+					try
+					{
+						$chunkResult = Invoke-sqmChunkedTableTransfer @chunkParams
+						foreach ($r in @($chunkResult)) { $allResults.Add($r) }
+					}
+					catch
+					{
+						# Eine Tabelle darf den Rest des Laufs nicht mitreissen - der Fehler wird
+						# als Ergebniszeile sichtbar, damit er im Grid nicht untergeht.
+						$msg = Get-sqmTransferString -Key 'Gui.ChunkTableFailed' -FormatArgs @($chunkTable, $_.Exception.Message)
+						$allResults.Add([PSCustomObject]@{
+								Table   = $chunkTable
+								Status  = 'Failed'
+								Message = $msg
+							})
+					}
+				}
+
+				# --- Normale Tabellen: unveraendert ein einziger Invoke-sqmTableTransfer-Aufruf.
+				if ($normalTables.Count -gt 0)
+				{
+					$lblStatus.ForeColor = $cDim
+					$lblStatus.Text = Get-sqmTransferString -Key 'Gui.TransferRunning'
+					$form.Refresh()
+					[System.Windows.Forms.Application]::DoEvents()
+					foreach ($r in @(Invoke-sqmTableTransfer @params)) { $allResults.Add($r) }
+				}
+
+				$results = $allResults.ToArray()
 
 				$dgv.DataSource = ($results | ConvertTo-DataTable)
 

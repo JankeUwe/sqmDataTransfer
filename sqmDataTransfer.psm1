@@ -31,18 +31,60 @@ $script:sqmtModuleConfig = @{
 	# leeren/frischen Ziel ist der normale All-or-nothing-Copy schlicht schneller (kein Pro-Chunk-
 	# Overhead), darum dort keine Empfehlung.
 	ChunkAdviceMinExistingPercent = 30
+	# Obergrenze fuer die AUTOMATISCH ermittelte Chunk-Anzahl. Wird -MaxChunkValues nicht explizit
+	# gesetzt, akzeptiert Invoke-sqmChunkedTableTransfer die tatsaechlich gefundene Anzahl
+	# unterschiedlicher Werte bis zu dieser Grenze, statt an einem festen Default zu scheitern und
+	# einen zweiten Anlauf mit passender Zahl zu erzwingen. Oberhalb der Grenze ist die Spalte zu
+	# feingranular (Richtung Zeitstempel) und der Lauf bricht mit Begruendung ab.
+	MaxChunkValueCeiling   = 2000
 }
 
-# Aktuelle Version aus der Manifestdatei lesen
+# Aktuelle Version bestimmen.
+#
+# Primaerquelle ist das Modulobjekt selbst: waehrend die .psm1 laeuft, ist
+# $ExecutionContext.SessionState.Module genau dieses Modul, und dessen .Version stammt direkt aus
+# dem Manifest. Das kann nicht fehlschlagen und braucht keinen Dateizugriff.
+#
+# Vorher wurde hier Import-PowerShellDataFile auf die .psd1 verwendet. Das ist unter Windows
+# PowerShell 5.1 keine Cmdlet, sondern eine FUNKTION aus Microsoft.PowerShell.Utility - und die ist
+# im Modulscope waehrend des Modulladens nicht zuverlaessig aufloesbar. Je nach Startkontext des
+# Prozesses schlug der Aufruf mit CommandNotFoundException fehl, ein leeres catch verschluckte das,
+# und die Version blieb still auf dem Platzhalter '0.1.0.0' stehen - sichtbar nur im GUI-Titel, der
+# dann "v0.1.0.0" statt der echten Version anzeigte.
+$script:sqmtModuleVersionSource = 'Fallback'
 $manifestPath = Join-Path $PSScriptRoot 'sqmDataTransfer.psd1'
 if (Test-Path $manifestPath)
 {
 	try
 	{
-		$manifestData = Import-PowerShellDataFile -Path $manifestPath -ErrorAction Stop
-		$script:sqmtModuleConfig['ModuleVersion'] = $manifestData.ModuleVersion
+		# Erster Weg: der uebliche Befehl - aber nur, wenn er hier auch aufloesbar ist.
+		if (Get-Command Import-PowerShellDataFile -ErrorAction SilentlyContinue)
+		{
+			$manifestData = Import-PowerShellDataFile -Path $manifestPath -ErrorAction Stop
+			$script:sqmtModuleConfig['ModuleVersion'] = $manifestData.ModuleVersion
+			$script:sqmtModuleVersionSource = 'DataFile'
+		}
+		else
+		{
+			# Zweiter Weg ohne jede Befehlsaufloesung: das Manifest ueber den PowerShell-Parser
+			# lesen. [System.Management.Automation.Language.Parser] ist ein .NET-Typ und damit
+			# immer verfuegbar, egal in welchem Scope oder Ladezustand die .psm1 gerade laeuft.
+			$manifestAst = [System.Management.Automation.Language.Parser]::ParseFile($manifestPath, [ref]$null, [ref]$null)
+			$hashAst = $manifestAst.Find({ $args[0] -is [System.Management.Automation.Language.HashtableAst] }, $false)
+			$versionPair = $hashAst.KeyValuePairs | Where-Object { $_.Item1.Extent.Text.Trim("'", '"', ' ') -eq 'ModuleVersion' } | Select-Object -First 1
+			if ($versionPair)
+			{
+				$script:sqmtModuleConfig['ModuleVersion'] = $versionPair.Item2.Extent.Text.Trim("'", '"', ' ')
+				$script:sqmtModuleVersionSource = 'Ast'
+			}
+		}
 	}
-	catch { }
+	catch
+	{
+		# Nicht still verschlucken: sonst steht im GUI-Titel eine falsche Versionsnummer und
+		# niemand erfaehrt, warum.
+		Write-Warning "sqmDataTransfer: Modulversion konnte nicht aus '$manifestPath' gelesen werden, es gilt der Platzhalter '$($script:sqmtModuleConfig['ModuleVersion'])': $($_.Exception.Message)"
+	}
 }
 
 # =============================================================================
