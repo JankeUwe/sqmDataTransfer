@@ -1,5 +1,33 @@
 # sqmDataTransfer — Changelog
 
+## [0.1.19.0] — 2026-07-28
+
+### BulkCopyTimeOut ist von aussen erreichbar - vorher konnte ein einzelner haengender Batch den ganzen Chunk toeten
+
+`Copy-sqmTableData` kannte `-BulkCopyTimeOut` (Default 300 Sekunden) schon immer, aber weder
+`Invoke-sqmTableTransfer` noch `Invoke-sqmChunkedTableTransfer` hatten den Parameter. Wer ueber
+diese beiden Funktionen arbeitete - also jeder Chunk-Transfer - bekam die 300 Sekunden fest
+verdrahtet und konnte sie durch nichts veraendern.
+
+Der Wert gilt je **Batch**, nicht fuer die ganze Tabelle. Bei gleichmaessigem Durchsatz ist er
+grosszuegig; bei einem Batch, der stehen bleibt, ist er es nicht. Ein Checkpoint auf dem Ziel, ein
+Autogrowth von Daten- oder Logdatei oder ein Moment IO-Konkurrenz haelt einen einzelnen Batch
+muehelos ueber 300 Sekunden, und dann stirbt die gesamte Kopie mit "Execution Timeout Expired".
+Beim Chunk-Transfer ist das die teure Variante des Fehlers: der Chunk wird ab seiner ersten Zeile
+wiederholt, ein Haenger kurz vor Ende eines grossen Chunks wirft also alles weg, was dieser Chunk
+bereits kopiert hatte.
+
+Belegt an einem realen Lauf am 28.07.: 23 Chunks, 145.625.625 Zeilen, Durchsatz ueber den
+gesamten Lauf konstant zwischen 13.950 und 14.826 Zeilen/s - also keinerlei Degradation - und dann
+Abbruch einer Scheibe mit genau diesem Timeout. Bezeichnend war, dass dasselbe Aufrufskript fuer
+seinen anderen Kopierpfad (`Copy-DbaDbTableData`) laengst `BulkCopyTimeout = 0` setzte; auf dem
+sqmDataTransfer-Pfad war dieselbe Absicherung schlicht nicht moeglich.
+
+`-BulkCopyTimeOut` gibt es jetzt an beiden Funktionen, Default unveraendert 300, `0` bedeutet kein
+Limit. Fuer eine unbeaufsichtigte Migration ist 0 meist der bessere Handel: einen Haenger
+auszusitzen kostet weniger als einen Chunk zu wiederholen. Eine kleinere `-BatchSize` begrenzt
+zusaetzlich, wie viel ein einzelner Haenger ueberhaupt kosten kann.
+
 ## [0.1.18.0] — 2026-07-28
 
 ### Chunk-Spalte und Chunk-Anzahl werden automatisch ermittelt

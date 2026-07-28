@@ -127,6 +127,18 @@
 .PARAMETER BatchSize
     Rows per batch for each chunk's data copy. Default: the module's DefaultBatchSize.
 
+.PARAMETER BulkCopyTimeOut
+    Seconds a single bulk copy BATCH may take before SqlBulkCopy aborts it. Default: 300.
+    0 means no limit.
+
+    Until this parameter existed the value was fixed at 300 seconds with no way to reach it from
+    outside, and a single stalled batch (destination checkpoint, log or data file autogrowth, IO
+    contention) killed the whole chunk with "Execution Timeout Expired". On a chunked transfer
+    that is the expensive kind of failure: the chunk is retried from its first row, so a stall
+    near the end of a large chunk throws away everything that chunk had copied. For an unattended
+    migration 0 is usually the better trade - waiting out a stall costs less than redoing a
+    chunk. Smaller -BatchSize values also reduce how much a single stall can cost.
+
 .PARAMETER ContinueOnError
     Continue with the next chunk on error.
 
@@ -215,6 +227,9 @@ function Invoke-sqmChunkedTableTransfer
 		[bool]$KeepNulls = $true,
 		[Parameter(Mandatory = $false)]
 		[int]$BatchSize,
+		[Parameter(Mandatory = $false)]
+		[ValidateRange(0, [int]::MaxValue)]
+		[int]$BulkCopyTimeOut = 300,
 		[Parameter(Mandatory = $false)]
 		[switch]$ContinueOnError,
 		[Parameter(Mandatory = $false)]
@@ -609,6 +624,7 @@ function Invoke-sqmChunkedTableTransfer
 				SkipRowCountCompare    = $true
 				KeepIdentity		   = $KeepIdentity
 				KeepNulls			   = $KeepNulls
+				BulkCopyTimeOut		   = $BulkCopyTimeOut
 				ContinueOnError		   = $true
 				EnableException		   = $EnableException
 				NoReport			   = $true

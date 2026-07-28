@@ -103,6 +103,18 @@
 .PARAMETER BatchSize
     Rows per batch for the data copy. Default: the module's DefaultBatchSize.
 
+.PARAMETER BulkCopyTimeOut
+    Seconds a single bulk copy BATCH may take before SqlBulkCopy aborts it. Default: 300.
+    0 means no limit.
+
+    This is per batch, not for the whole table, so the default is generous for a batch that runs
+    at a steady rate. It is not generous for one that stalls: a destination checkpoint, a log or
+    data file autogrowth, or a moment of IO contention can hold a single batch well past 300
+    seconds, and the whole copy then dies with "Execution Timeout Expired" and loses everything
+    that batch had not committed. On a long-running migration that is a real risk, which is why
+    the value is now reachable from the outside at all. Set 0 for an unattended bulk load where
+    you would rather wait than lose the run.
+
 .PARAMETER ContinueOnError
     Continue with the next table on error.
 
@@ -203,6 +215,9 @@ function Invoke-sqmTableTransfer
 		[bool]$KeepNulls = $true,
 		[Parameter(Mandatory = $false)]
 		[int]$BatchSize,
+		[Parameter(Mandatory = $false)]
+		[ValidateRange(0, [int]::MaxValue)]
+		[int]$BulkCopyTimeOut = 300,
 		[Parameter(Mandatory = $false)]
 		[switch]$ContinueOnError,
 		[Parameter(Mandatory = $false)]
@@ -473,7 +488,8 @@ function Invoke-sqmTableTransfer
 												  -Destination $Destination -DestinationDatabase $DestinationDatabase `
 												  -Table $t -SourceQuery $SourceQuery -SourceCredential $srcCred -DestinationCredential $dstCred `
 												  -Truncate:$Truncate -KeepIdentity $KeepIdentity -KeepNulls $KeepNulls `
-												  -BatchSize $BatchSize -ContinueOnError:$ContinueOnError -EnableException:$EnableException `
+												  -BatchSize $BatchSize -BulkCopyTimeOut $BulkCopyTimeOut `
+												  -ContinueOnError:$ContinueOnError -EnableException:$EnableException `
 												  -Confirm:$false -WhatIf:$WhatIfPreference
 
 				$copyResult = $copyResults | Select-Object -First 1
