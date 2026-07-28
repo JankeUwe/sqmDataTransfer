@@ -221,8 +221,13 @@ function Invoke-sqmChunkedTableTransfer
 	$qualified = "$schemaName.$tableName"
 	$bracketed = "[$schemaName].[$tableName]"
 
-	$srcConnParams = @{ SqlInstance = $Source; Database = $SourceDatabase; ErrorAction = 'Stop' }
-	$dstConnParams = @{ SqlInstance = $Destination; Database = $DestinationDatabase; ErrorAction = 'Stop' }
+	# Kein ErrorAction hier: jeder Invoke-DbaQuery-Aufruf unten setzt ohnehin -EnableException, was
+	# -ErrorAction in dbatools komplett ueberschreibt - waere also redundant. Fuer die drei
+	# Get-DbaDbTable-Existenzchecks unten (die bewusst -ErrorAction SilentlyContinue brauchen) waere
+	# ein ErrorAction = 'Stop' hier dagegen ein echter Fehler ("Parameter mehr als einmal angegeben"),
+	# weil -Table/-Schema/-ErrorAction dann doppelt gebunden wuerden.
+	$srcConnParams = @{ SqlInstance = $Source; Database = $SourceDatabase }
+	$dstConnParams = @{ SqlInstance = $Destination; Database = $DestinationDatabase }
 	if ($srcCred) { $srcConnParams['SqlCredential'] = $srcCred }
 	if ($dstCred) { $dstConnParams['SqlCredential'] = $dstCred }
 

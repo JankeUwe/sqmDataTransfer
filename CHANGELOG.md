@@ -1,5 +1,23 @@
 # sqmDataTransfer — Changelog
 
+## [0.1.17.1] — 2026-07-28
+
+### Fix: "parameter 'ErrorAction' is specified more than once" crash under Windows PowerShell 5.1
+
+`Invoke-sqmChunkedTableTransfer`'s destination existence/pre-count checks (`Get-DbaDbTable @dstConnParams
+-Table ... -ErrorAction SilentlyContinue`) splatted `$dstConnParams`, which already carried
+`ErrorAction = 'Stop'`, alongside an explicit `-ErrorAction SilentlyContinue` - a duplicate common
+parameter. This went undetected through all of 0.1.14.0-0.1.17.0's testing because that testing ran
+under PowerShell 7, which tolerates the duplicate; the module targets and is actually deployed on
+Windows PowerShell 5.1 (`PowerShellVersion = '5.1'` in the manifest), whose parameter binder rejects
+it outright - reproduced directly under real `powershell.exe` 5.1: `ParameterBindingException:
+ParameterAlreadyBound`. Hit on every normal (non-`-Truncate`) resume of an existing destination,
+i.e. the common case. Fixed by dropping the redundant `ErrorAction = 'Stop'` from the connection
+params hashtable entirely - every `Invoke-DbaQuery` call in the function already passes
+`-EnableException`, which fully overrides `-ErrorAction` in dbatools, so nothing relied on it.
+Re-verified the full chunked-transfer test suite (fresh copy, resume/skip, partial-chunk recovery)
+under actual Windows PowerShell 5.1 this time, not just PowerShell 7.
+
 ## [0.1.17.0] — 2026-07-27
 
 ### Chunking advice now only fires when it would actually help
