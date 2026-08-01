@@ -59,6 +59,14 @@
 .PARAMETER Table
     The single table to transfer ('Table' or 'schema.Table').
 
+.PARAMETER DestinationTable
+    Overrides the target table name ('Table' or 'schema.Table') - use this when source and
+    destination table names differ (e.g. transferring into a freshly re-partitioned '_New' copy on
+    the same instance/database). Requires the destination table to already exist with the desired
+    structure: combined with -ScriptMetadata this throws, since Copy-sqmTableSchema always creates
+    the destination under the SOURCE name, never a renamed copy. Without -DestinationTable, source
+    and destination table names must match (the original, still-default behaviour).
+
 .PARAMETER ChunkColumn
     Column to split the transfer on. Its distinct values (as they exist on the source) become the
     chunk boundaries - one Invoke-sqmTableTransfer call per value.
@@ -178,6 +186,16 @@
     the table's metadata and statistics, and the chunk count is taken from what is actually there.
     Check the log line "Chunk-Spalte automatisch gewaehlt" to see which column was picked and why.
 
+.EXAMPLE
+    Invoke-sqmChunkedTableTransfer -Source SUEB011IBP -SourceDatabase FXUeberleitung `
+        -Destination SUEB011IBP -DestinationDatabase FXUeberleitung -Table dbo.ACC_ATOM_GUV_PLUS `
+        -DestinationTable dbo.ACC_ATOM_GUV_PLUS_New -ChunkColumn dtmStichtag
+
+    Same instance/database, different table name - e.g. loading a freshly re-partitioned '_New'
+    copy of the table (already created with its own indexes/partition scheme) before the B6
+    rename-swap cutover. dbo.ACC_ATOM_GUV_PLUS_New must already exist; -ScriptMetadata is not
+    supported together with -DestinationTable.
+
 .NOTES
     Prerequisites: dbatools, Invoke-sqmTableTransfer, Export-sqmTransferReport.
     No primary/unique key is required on the table - resumability is per chunk value, not per row.
@@ -197,6 +215,8 @@ function Invoke-sqmChunkedTableTransfer
 		[string]$DestinationDatabase,
 		[Parameter(Mandatory = $true)]
 		[string]$Table,
+		[Parameter(Mandatory = $false)]
+		[string]$DestinationTable,
 		[Parameter(Mandatory = $false)]
 		[string]$ChunkColumn,
 		[Parameter(Mandatory = $false)]
@@ -253,11 +273,29 @@ function Invoke-sqmChunkedTableTransfer
 		if (-not $OutputPath) { $OutputPath = "C:\System\WinSrvLog\MSSQL" }
 	}
 
+	if ($DestinationTable -and $ScriptMetadata)
+	{
+		throw "-DestinationTable zusammen mit -ScriptMetadata wird nicht unterstuetzt - Copy-sqmTableSchema legt die Zieltabelle immer unter dem Quellnamen an. Zieltabelle vorher manuell (unter dem gewuenschten Namen) anlegen und ohne -ScriptMetadata aufrufen."
+	}
+
 	$schemaName = 'dbo'
 	$tableName = $Table
 	if ($Table -match '^(?<schema>[^.]+)\.(?<name>.+)$') { $schemaName = $Matches['schema']; $tableName = $Matches['name'] }
 	$qualified = "$schemaName.$tableName"
 	$bracketed = "[$schemaName].[$tableName]"
+
+	# --- Ziel kann unter einem anderen Namen liegen (z.B. Transfer in eine neu partitionierte
+	# '_New'-Kopie auf derselben Instanz/Datenbank) - ohne -DestinationTable identisch zur Quelle,
+	# das bisherige Verhalten bleibt unveraendert.
+	$dstSchemaName = $schemaName
+	$dstTableName = $tableName
+	if ($DestinationTable)
+	{
+		$dstSchemaName = 'dbo'; $dstTableName = $DestinationTable
+		if ($DestinationTable -match '^(?<schema>[^.]+)\.(?<name>.+)$') { $dstSchemaName = $Matches['schema']; $dstTableName = $Matches['name'] }
+	}
+	$dstQualified = "$dstSchemaName.$dstTableName"
+	$dstBracketed = "[$dstSchemaName].[$dstTableName]"
 
 	# Kein ErrorAction hier: jeder Invoke-DbaQuery-Aufruf unten setzt ohnehin -EnableException, was
 	# -ErrorAction in dbatools komplett ueberschreibt - waere also redundant. Fuer die drei
@@ -326,7 +364,8 @@ function Invoke-sqmChunkedTableTransfer
 		if (-not $MaxChunkValues) { $MaxChunkValues = 2000 }
 	}
 
-	Write-sqmTransferLog -Message "Invoke-sqmChunkedTableTransfer: '$Source'.'$SourceDatabase'.$qualified -> '$Destination'.'$DestinationDatabase' per '$ChunkColumn'" `
+	$dstLogSuffix = if ($DestinationTable) { ".$dstQualified" } else { '' }
+	Write-sqmTransferLog -Message "Invoke-sqmChunkedTableTransfer: '$Source'.'$SourceDatabase'.$qualified -> '$Destination'.'$DestinationDatabase'$dstLogSuffix per '$ChunkColumn'" `
 						  -FunctionName $functionName -Level 'INFO'
 
 	# A plain "SELECT * FROM source" is fine here regardless of column order, computed columns, or
@@ -357,7 +396,7 @@ function Invoke-sqmChunkedTableTransfer
 	# comes back empty - no exception needed for that case. An exception here means the query
 	# itself failed (permissions, connectivity, wrong database context, ...) and must be visible,
 	# not silently treated the same as "table doesn't exist".
-	$dstColQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND is_computed = 0 ORDER BY column_id"
+	$dstColQuery = "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'$dstBracketed') AND is_computed = 0 ORDER BY column_id"
 	$dstColumnNames = @(Invoke-DbaQuery @dstConnParams -Query $dstColQuery -As PSObject -EnableException | Select-Object -ExpandProperty name)
 
 	if ($dstColumnNames.Count -gt 0)
@@ -445,10 +484,10 @@ function Invoke-sqmChunkedTableTransfer
 	# ueber Get-DbaDbTable) in jedem einzelnen Chunk-Aufruf - hier reicht einmal.
 	if ($ScriptMetadata)
 	{
-		$dstExistsForCreate = @(Get-DbaDbTable @dstConnParams -Table $tableName -Schema $schemaName -ErrorAction SilentlyContinue).Count -gt 0
+		$dstExistsForCreate = @(Get-DbaDbTable @dstConnParams -Table $dstTableName -Schema $dstSchemaName -ErrorAction SilentlyContinue).Count -gt 0
 		if (-not $dstExistsForCreate)
 		{
-			$createAction = "Zieltabelle $qualified auf '$Destination'.'$DestinationDatabase' aus Quelle anlegen"
+			$createAction = "Zieltabelle $dstQualified auf '$Destination'.'$DestinationDatabase' aus Quelle anlegen"
 			if ($PSCmdlet.ShouldProcess($Destination, $createAction))
 			{
 				$schemaResults = Copy-sqmTableSchema -Source $Source -SourceDatabase $SourceDatabase `
@@ -460,7 +499,7 @@ function Invoke-sqmChunkedTableTransfer
 				$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = '(alle)'; Step = 'ScriptMetadata'; Status = $(if ($schemaFailCount -gt 0) { 'Failed' } else { 'Success' }); Message = "$($schemaResults.Count) Objekt(e), $schemaFailCount fehlgeschlagen."; Timestamp = (Get-Date) })
 				if ($schemaFailCount -gt 0 -and $EnableException)
 				{
-					throw "Anlegen von $qualified auf '$Destination'.'$DestinationDatabase' fehlgeschlagen."
+					throw "Anlegen von $dstQualified auf '$Destination'.'$DestinationDatabase' fehlgeschlagen."
 				}
 			}
 		}
@@ -470,13 +509,13 @@ function Invoke-sqmChunkedTableTransfer
 	{
 		# Nur leeren, wenn die Zieltabelle existiert (siehe ScriptMetadata-Block oben) - TRUNCATE
 		# auf eine nicht existierende Tabelle wuerde sonst fehlschlagen.
-		$dstExists = @(Get-DbaDbTable @dstConnParams -Table $tableName -Schema $schemaName -ErrorAction SilentlyContinue).Count -gt 0
+		$dstExists = @(Get-DbaDbTable @dstConnParams -Table $dstTableName -Schema $dstSchemaName -ErrorAction SilentlyContinue).Count -gt 0
 		if ($dstExists)
 		{
-			$truncateAction = "Zieltabelle $qualified auf '$Destination'.'$DestinationDatabase' leeren (TRUNCATE)"
+			$truncateAction = "Zieltabelle $dstQualified auf '$Destination'.'$DestinationDatabase' leeren (TRUNCATE)"
 			if ($PSCmdlet.ShouldProcess($Destination, $truncateAction))
 			{
-				Invoke-DbaQuery @dstConnParams -Query "TRUNCATE TABLE $bracketed" -EnableException | Out-Null
+				Invoke-DbaQuery @dstConnParams -Query "TRUNCATE TABLE $dstBracketed" -EnableException | Out-Null
 				Write-sqmTransferLog -Message $truncateAction -FunctionName $functionName -Level 'INFO'
 			}
 		}
@@ -490,11 +529,11 @@ function Invoke-sqmChunkedTableTransfer
 	$constraintsWereDisabled = $false
 	if (-not $SkipConstraintHandling)
 	{
-		$disableAction = "FKs/Indizes/Trigger auf '$Destination'.'$DestinationDatabase'.$qualified deaktivieren (einmalig fuer den gesamten Chunk-Lauf)"
+		$disableAction = "FKs/Indizes/Trigger auf '$Destination'.'$DestinationDatabase'.$dstQualified deaktivieren (einmalig fuer den gesamten Chunk-Lauf)"
 		if ($PSCmdlet.ShouldProcess($Destination, $disableAction))
 		{
 			$disableResults = Disable-sqmTableConstraints -SqlInstance $Destination -Database $DestinationDatabase `
-														   -Table $Table -SqlCredential $dstCred `
+														   -Table $dstQualified -SqlCredential $dstCred `
 														   -IncludeForeignKeys $IncludeForeignKeys -IncludeIndexes $IncludeIndexes `
 														   -IncludeTriggers $IncludeTriggers -Confirm:$false
 			$constraintsWereDisabled = $true
@@ -515,7 +554,7 @@ function Invoke-sqmChunkedTableTransfer
 	$dstCountByChunk = @{}
 	if (-not $Truncate)
 	{
-		$dstExistsForCount = @(Get-DbaDbTable @dstConnParams -Table $tableName -Schema $schemaName -ErrorAction SilentlyContinue).Count -gt 0
+		$dstExistsForCount = @(Get-DbaDbTable @dstConnParams -Table $dstTableName -Schema $dstSchemaName -ErrorAction SilentlyContinue).Count -gt 0
 		if ($dstExistsForCount)
 		{
 			try
@@ -525,7 +564,7 @@ function Invoke-sqmChunkedTableTransfer
 				# dieser GROUP BY-Scan je nach Clustered-Index-Abdeckung potenziell ein voller Scan, der
 				# laenger als 30s dauern kann. Ein Timeout hier darf NICHT einfach als "Ziel ist leer"
 				# behandelt werden (siehe catch unten) - genau das waere der gefaehrliche Default.
-				$dstChunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $bracketed GROUP BY [$ChunkColumn]"
+				$dstChunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $dstBracketed GROUP BY [$ChunkColumn]"
 				$dstChunkRows = @(Invoke-DbaQuery @dstConnParams -Query $dstChunkQuery -As PSObject -EnableException -QueryTimeout 3600)
 				foreach ($dr in $dstChunkRows) { $dstCountByChunk[(Format-SqlLiteral $dr.ChunkValue)] = [int64]$dr.Cnt }
 			}
@@ -536,7 +575,7 @@ function Invoke-sqmChunkedTableTransfer
 				# einem vorherigen Lauf bereits echte Daten enthaelt, fuehrt das zum kompletten
 				# Doppelt-Einfuegen JEDES Chunks statt nur der tatsaechlich fehlenden. Ohne verlaessliche
 				# Kenntnis des Ziel-Zustands ist Abbruch die einzig sichere Reaktion.
-				throw "Snapshot der Ziel-Zeilenzahl pro Chunk fuer $qualified auf '$Destination'.'$DestinationDatabase' fehlgeschlagen: $($_.Exception.Message) - Abbruch, um Doppelt-Kopieren bereits vorhandener Chunks zu verhindern. Ursache pruefen (Berechtigungen, Timeout, Spalte '$ChunkColumn' auf dem Ziel) und erneut versuchen."
+				throw "Snapshot der Ziel-Zeilenzahl pro Chunk fuer $dstQualified auf '$Destination'.'$DestinationDatabase' fehlgeschlagen: $($_.Exception.Message) - Abbruch, um Doppelt-Kopieren bereits vorhandener Chunks zu verhindern. Ursache pruefen (Berechtigungen, Timeout, Spalte '$ChunkColumn' auf dem Ziel) und erneut versuchen."
 			}
 		}
 	}
@@ -583,12 +622,12 @@ function Invoke-sqmChunkedTableTransfer
 			# betroffenen Chunk).
 			if ($null -ne $dstCount -and $dstCount -gt 0)
 			{
-				$cleanupAction = "Vorhandene $dstCount Zeile(n) fuer Chunk $chunkLabel auf '$Destination'.'$DestinationDatabase'.$qualified loeschen (Rest eines vorherigen Laufs) vor erneutem Kopieren"
+				$cleanupAction = "Vorhandene $dstCount Zeile(n) fuer Chunk $chunkLabel auf '$Destination'.'$DestinationDatabase'.$dstQualified loeschen (Rest eines vorherigen Laufs) vor erneutem Kopieren"
 				if ($PSCmdlet.ShouldProcess($Destination, $cleanupAction))
 				{
 					try
 					{
-						Invoke-DbaQuery @dstConnParams -Query "DELETE FROM $bracketed WHERE [$ChunkColumn] = $literal" -EnableException | Out-Null
+						Invoke-DbaQuery @dstConnParams -Query "DELETE FROM $dstBracketed WHERE [$ChunkColumn] = $literal" -EnableException | Out-Null
 						Write-sqmTransferLog -Message $cleanupAction -FunctionName $functionName -Level 'WARNING'
 						$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = "$chunkValue"; Step = 'CleanPartialChunk'; Status = 'Success'; Message = "$dstCount Zeile(n) geloescht vor Neukopie."; Timestamp = (Get-Date) })
 					}
@@ -610,6 +649,7 @@ function Invoke-sqmChunkedTableTransfer
 				Destination			   = $Destination
 				DestinationDatabase    = $DestinationDatabase
 				Table				   = $Table
+				DestinationTable	   = $DestinationTable
 				SourceQuery			   = $chunkSql
 				SqlCredential		   = $SqlCredential
 				SourceCredential	   = $srcCred
@@ -659,7 +699,7 @@ function Invoke-sqmChunkedTableTransfer
 			$finalDstCountByChunk = @{}
 			try
 			{
-				$finalDstChunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $bracketed GROUP BY [$ChunkColumn]"
+				$finalDstChunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $dstBracketed GROUP BY [$ChunkColumn]"
 				$finalDstChunkRows = @(Invoke-DbaQuery @dstConnParams -Query $finalDstChunkQuery -As PSObject -EnableException -QueryTimeout 3600)
 				foreach ($dr in $finalDstChunkRows) { $finalDstCountByChunk[(Format-SqlLiteral $dr.ChunkValue)] = [int64]$dr.Cnt }
 
@@ -695,7 +735,7 @@ function Invoke-sqmChunkedTableTransfer
 			try
 			{
 				$enableResults = Enable-sqmTableConstraints -SqlInstance $Destination -Database $DestinationDatabase `
-															 -Table $Table -SqlCredential $dstCred -Revalidate $RevalidateForeignKeys `
+															 -Table $dstQualified -SqlCredential $dstCred -Revalidate $RevalidateForeignKeys `
 															 -Confirm:$false
 				$enableFailCount = @($enableResults | Where-Object Status -like 'Failed*').Count
 				$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = '(alle)'; Step = 'EnableConstraints'; Status = $(if ($enableFailCount -gt 0) { 'Warning' } else { 'Success' }); Message = "$($enableResults.Count) Objekt(e), $enableFailCount fehlgeschlagen."; Timestamp = (Get-Date) })

@@ -45,6 +45,12 @@
     ordinal position, not by name. For splitting a very large table into chunks, prefer
     Invoke-sqmChunkedTableTransfer, which builds and loops this automatically.
 
+.PARAMETER DestinationTable
+    Overrides the target table name ('Table' or 'schema.Table'). Only valid when -Table specifies
+    exactly one table (same restriction as Copy-sqmTableData/Compare-sqmTableRowCount). Requires
+    the destination table to already exist (-ScriptMetadata does not support creating a
+    differently-named copy of the source schema - combining both throws).
+
 .PARAMETER SqlCredential
     Optional PSCredential for both instances. For different credentials use
     -SourceCredential / -DestinationCredential.
@@ -186,6 +192,8 @@ function Invoke-sqmTableTransfer
 		[Parameter(Mandatory = $false)]
 		[string]$SourceQuery,
 		[Parameter(Mandatory = $false)]
+		[string]$DestinationTable,
+		[Parameter(Mandatory = $false)]
 		[System.Management.Automation.PSCredential]$SqlCredential,
 		[Parameter(Mandatory = $false)]
 		[System.Management.Automation.PSCredential]$SourceCredential,
@@ -238,6 +246,15 @@ function Invoke-sqmTableTransfer
 		{
 			throw "-SourceQuery kann nur zusammen mit genau einer Tabelle in -Table verwendet werden."
 		}
+		if ($DestinationTable -and @($Table).Count -gt 1)
+		{
+			throw "-DestinationTable kann nur zusammen mit genau einer Tabelle in -Table verwendet werden."
+		}
+		if ($DestinationTable -and $ScriptMetadata)
+		{
+			throw "-DestinationTable zusammen mit -ScriptMetadata wird nicht unterstuetzt - Copy-sqmTableSchema legt die Zieltabelle immer unter dem Quellnamen an. Zieltabelle vorher manuell (unter dem gewuenschten Namen) anlegen und ohne -ScriptMetadata aufrufen."
+		}
+		$destinationTableName = if ($DestinationTable) { $DestinationTable } else { $null }
 
 		$srcCred = if ($SourceCredential) { $SourceCredential } elseif ($SqlCredential) { $SqlCredential } else { $null }
 		$dstCred = if ($DestinationCredential) { $DestinationCredential } elseif ($SqlCredential) { $SqlCredential } else { $null }
@@ -348,6 +365,9 @@ function Invoke-sqmTableTransfer
 					if (-not $largeThreshold) { $largeThreshold = 10000000 }
 					$schemaNameChk = 'dbo'; $tableNameChk = $t
 					if ($t -match '^(?<schema>[^.]+)\.(?<name>.+)$') { $schemaNameChk = $Matches['schema']; $tableNameChk = $Matches['name'] }
+					$dstSchemaNameChk = $schemaNameChk; $dstTableNameChk = $tableNameChk
+					if ($destinationTableName -and $destinationTableName -match '^(?<schema>[^.]+)\.(?<name>.+)$') { $dstSchemaNameChk = $Matches['schema']; $dstTableNameChk = $Matches['name'] }
+					elseif ($destinationTableName) { $dstTableNameChk = $destinationTableName }
 					$sizeQueryParams = @{ SqlInstance = $Source; Database = $SourceDatabase; ErrorAction = 'Stop' }
 					if ($srcCred) { $sizeQueryParams['SqlCredential'] = $srcCred }
 					$rcRaw = (Invoke-DbaQuery @sizeQueryParams -Query "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$schemaNameChk].[$tableNameChk]') AND index_id IN (0, 1)" -As PSObject -EnableException).RowCount
@@ -368,7 +388,7 @@ function Invoke-sqmTableTransfer
 						{
 							$dstSizeParams = @{ SqlInstance = $Destination; Database = $DestinationDatabase; ErrorAction = 'Stop' }
 							if ($dstCred) { $dstSizeParams['SqlCredential'] = $dstCred }
-							$dstRcRaw = (Invoke-DbaQuery @dstSizeParams -Query "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$schemaNameChk].[$tableNameChk]') AND index_id IN (0, 1)" -As PSObject -EnableException).RowCount
+							$dstRcRaw = (Invoke-DbaQuery @dstSizeParams -Query "SELECT SUM(row_count) AS [RowCount] FROM sys.dm_db_partition_stats WHERE object_id = OBJECT_ID(N'[$dstSchemaNameChk].[$dstTableNameChk]') AND index_id IN (0, 1)" -As PSObject -EnableException).RowCount
 						}
 						catch { $dstRcRaw = $null }
 						$existingPercent = if ($null -ne $dstRcRaw -and [int64]$rcRaw -gt 0) { ([int64]$dstRcRaw / [int64]$rcRaw) * 100 } else { 0 }
@@ -464,7 +484,7 @@ function Invoke-sqmTableTransfer
 					if ($PSCmdlet.ShouldProcess($Destination, $disableAction))
 					{
 						$disableResults = Disable-sqmTableConstraints -SqlInstance $Destination -Database $DestinationDatabase `
-																	   -Table $t -SqlCredential $dstCred `
+																	   -Table $(if ($destinationTableName) { $destinationTableName } else { $t }) -SqlCredential $dstCred `
 																	   -IncludeForeignKeys $IncludeForeignKeys -IncludeIndexes $IncludeIndexes `
 																	   -IncludeTriggers $IncludeTriggers `
 																	   -Confirm:$false
@@ -486,7 +506,7 @@ function Invoke-sqmTableTransfer
 				# --- Daten kopieren ---
 				$copyResults = Copy-sqmTableData -Source $Source -SourceDatabase $SourceDatabase `
 												  -Destination $Destination -DestinationDatabase $DestinationDatabase `
-												  -Table $t -SourceQuery $SourceQuery -SourceCredential $srcCred -DestinationCredential $dstCred `
+												  -Table $t -DestinationTable $destinationTableName -SourceQuery $SourceQuery -SourceCredential $srcCred -DestinationCredential $dstCred `
 												  -Truncate:$Truncate -KeepIdentity $KeepIdentity -KeepNulls $KeepNulls `
 												  -BatchSize $BatchSize -BulkCopyTimeOut $BulkCopyTimeOut `
 												  -ContinueOnError:$ContinueOnError -EnableException:$EnableException `
@@ -508,7 +528,7 @@ function Invoke-sqmTableTransfer
 				{
 					$compareResult = Compare-sqmTableRowCount -Source $Source -SourceDatabase $SourceDatabase `
 															   -Destination $Destination -DestinationDatabase $DestinationDatabase `
-															   -Table $t -SourceCredential $srcCred -DestinationCredential $dstCred |
+															   -Table $t -DestinationTable $destinationTableName -SourceCredential $srcCred -DestinationCredential $dstCred |
 					Select-Object -First 1
 
 					if ($compareResult)
@@ -537,7 +557,7 @@ function Invoke-sqmTableTransfer
 					try
 					{
 						$enableResults = Enable-sqmTableConstraints -SqlInstance $Destination -Database $DestinationDatabase `
-																	 -Table $t -SqlCredential $dstCred -Revalidate $RevalidateForeignKeys `
+																	 -Table $(if ($destinationTableName) { $destinationTableName } else { $t }) -SqlCredential $dstCred -Revalidate $RevalidateForeignKeys `
 																	 -Confirm:$false
 						$enableFailCount = @($enableResults | Where-Object Status -like 'Failed*').Count
 						$status = if ($enableFailCount -gt 0) { 'Warning' } else { 'Success' }
