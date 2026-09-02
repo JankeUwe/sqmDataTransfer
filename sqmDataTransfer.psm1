@@ -37,6 +37,16 @@ $script:sqmtModuleConfig = @{
 	# einen zweiten Anlauf mit passender Zahl zu erzwingen. Oberhalb der Grenze ist die Spalte zu
 	# feingranular (Richtung Zeitstempel) und der Lauf bricht mit Begruendung ab.
 	MaxChunkValueCeiling   = 2000
+	# Ab 102.400 Zeilen in einem einzelnen Bulk-Insert-Batch komprimiert SQL Server einen
+	# Clustered-Columnstore-Index SOFORT in ein komprimiertes Rowgroup (BULKLOAD/COMPRESSED) statt
+	# ueber den Delta-Store zu gehen - bei COLUMNSTORE_ARCHIVE zusaetzlich mit der teureren
+	# Archive-Kompression, synchron im Ladepfad. Das Ergebnis sind viele kleine, vorzeitig
+	# komprimierte Rowgroups statt weniger Rowgroups, die im Delta-Store zu ihrer vollen Groesse
+	# anwachsen durften - beobachtet als 30-fache statt 10-fache Laufzeit bei 10-facher Batchgroesse.
+	# Copy-sqmTableData erkennt eine Columnstore-Zieltabelle automatisch (Test-sqmDestinationIsColumnstore)
+	# und deckelt die tatsaechlich an SqlBulkCopy uebergebene Batchgroesse auf diesen Wert, unabhaengig
+	# von -BatchSize/DefaultBatchSize - bewusst unterhalb der 102.400er-Schwelle, nicht direkt daran.
+	ColumnstoreBatchSizeCeiling = 100000
 }
 
 # Aktuelle Version bestimmen.

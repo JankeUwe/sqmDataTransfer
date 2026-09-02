@@ -52,6 +52,12 @@
 .PARAMETER BatchSize
     Rows per batch. Default: the module's DefaultBatchSize (Get-sqmTransferConfig).
 
+    Capped automatically, per table, to the module's ColumnstoreBatchSizeCeiling (default 100,000)
+    whenever the destination table has a columnstore index - a batch of 102,400 rows or more makes
+    SQL Server compress it directly into a compressed rowgroup instead of routing it through the
+    delta store, which is expensive (synchronously so, on COLUMNSTORE_ARCHIVE) and leaves behind
+    many small, prematurely-compressed rowgroups. See Set-sqmTransferConfig -ColumnstoreBatchSizeCeiling.
+
 .PARAMETER BulkCopyTimeOut
     Bulk copy timeout in seconds. Default: 300.
 
@@ -160,6 +166,27 @@ function Copy-sqmTableData
 		Write-sqmTransferLog -Message $action -FunctionName $functionName -Level 'INFO'
 		$sw = [System.Diagnostics.Stopwatch]::StartNew()
 
+		# --- Columnstore-Ziel: Batchgroesse deckeln, statt SQL Server ab 102.400 Zeilen pro Batch
+		# direkt in ein komprimiertes Rowgroup schreiben zu lassen (teuer, bei COLUMNSTORE_ARCHIVE
+		# synchron im Ladepfad, und erzeugt viele kleine statt weniger vollstaendiger Rowgroups). Die
+		# Pruefung ist eine reine Metadatenabfrage (sys.indexes) - kein Tabellenscan, kein spuerbarer
+		# Overhead pro Tabelle. Ein Ziel, das noch nicht existiert oder dessen Pruefung fehlschlaegt,
+		# gilt als Nicht-Columnstore (siehe Test-sqmDestinationIsColumnstore) - diese Optimierung darf
+		# einen ansonsten erfolgreichen Copy niemals verhindern.
+		$effectiveBatchSize = $BatchSize
+		if (Test-sqmDestinationIsColumnstore -SqlInstance $Destination -Database $DestinationDatabase -Table $targetTableName -SqlCredential $DestinationCredential)
+		{
+			$columnstoreCeiling = Get-sqmTransferConfig -Key 'ColumnstoreBatchSizeCeiling'
+			if (-not $columnstoreCeiling) { $columnstoreCeiling = 100000 }
+			if ($BatchSize -ge $columnstoreCeiling)
+			{
+				$capMsg = "Zieltabelle $targetTableName auf '$Destination'.'$DestinationDatabase' hat einen Columnstore-Index - Batchgroesse $BatchSize auf $columnstoreCeiling reduziert (SQL Server komprimiert Batches ab 102.400 Zeilen direkt statt ueber den Delta-Store, siehe Set-sqmTransferConfig -ColumnstoreBatchSizeCeiling)."
+				Write-Verbose $capMsg
+				Write-sqmTransferLog -Message $capMsg -FunctionName $functionName -Level 'INFO'
+				$effectiveBatchSize = $columnstoreCeiling
+			}
+		}
+
 		try
 		{
 			$copyParams = @{
@@ -169,7 +196,7 @@ function Copy-sqmTableData
 				DestinationDatabase = $DestinationDatabase
 				Table			    = $t
 				DestinationTable    = $targetTableName
-				BatchSize		    = $BatchSize
+				BatchSize		    = $effectiveBatchSize
 				BulkCopyTimeOut	    = $BulkCopyTimeOut
 				NotifyAfter		    = $NotifyAfter
 				KeepIdentity	    = $KeepIdentity
@@ -213,7 +240,7 @@ function Copy-sqmTableData
 						Truncate		    = $Truncate.IsPresent
 						KeepIdentity	    = $KeepIdentity
 						KeepNulls		    = $KeepNulls
-						BatchSize		    = $BatchSize
+						BatchSize		    = $effectiveBatchSize
 						BulkCopyTimeOut	    = $BulkCopyTimeOut
 						NotifyAfter		    = $NotifyAfter
 						ProgressActivity    = $progressActivity

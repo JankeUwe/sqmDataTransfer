@@ -38,6 +38,15 @@
     default and forcing a second attempt with the right number. Above the ceiling the column is too
     fine-grained (approaching a timestamp) and the run aborts with an explanation. Default: 2000.
 
+.PARAMETER ColumnstoreBatchSizeCeiling
+    Upper bound Copy-sqmTableData will actually pass to SqlBulkCopy.BatchSize when the destination
+    table has a columnstore index, regardless of -BatchSize/DefaultBatchSize. SQL Server compresses
+    a bulk-insert batch of 102,400 rows or more directly into a compressed rowgroup instead of
+    routing it through the delta store - expensive and, on COLUMNSTORE_ARCHIVE, synchronous in the
+    load path, and it produces many small, prematurely-compressed rowgroups instead of fewer
+    rowgroups left to grow to full size in the delta store. Default: 100,000 (deliberately below the
+    102,400 threshold, not flush against it).
+
 .PARAMETER PassThru
     Returns the updated configuration as an object.
 
@@ -69,6 +78,9 @@ function Set-sqmTransferConfig
 		[Parameter(Mandatory = $false)]
 		[ValidateRange(2, [int]::MaxValue)]
 		[int]$MaxChunkValueCeiling,
+		[Parameter(Mandatory = $false)]
+		[ValidateRange(1, 102399)]
+		[int]$ColumnstoreBatchSizeCeiling,
 		[Parameter(Mandatory = $false)]
 		[switch]$PassThru
 	)
@@ -161,6 +173,15 @@ function Set-sqmTransferConfig
 		if ($PSCmdlet.ShouldProcess('sqmtModuleConfig', "MaxChunkValueCeiling = $MaxChunkValueCeiling"))
 		{
 			$globalConfig['MaxChunkValueCeiling'] = $MaxChunkValueCeiling
+			$updated = $true
+		}
+	}
+
+	if ($PSBoundParameters.ContainsKey('ColumnstoreBatchSizeCeiling'))
+	{
+		if ($PSCmdlet.ShouldProcess('sqmtModuleConfig', "ColumnstoreBatchSizeCeiling = $ColumnstoreBatchSizeCeiling"))
+		{
+			$globalConfig['ColumnstoreBatchSizeCeiling'] = $ColumnstoreBatchSizeCeiling
 			$updated = $true
 		}
 	}

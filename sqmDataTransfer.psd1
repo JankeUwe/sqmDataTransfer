@@ -11,7 +11,7 @@
 	RootModule			   = 'sqmDataTransfer.psm1'
 
 	# Version number of this module.
-	ModuleVersion		   = '0.1.19.0'
+	ModuleVersion		   = '0.1.20.0'
 
 	# ID used to uniquely identify this module
 	GUID				   = '0a8cb3da-acb1-45c5-afb7-85759e11c89d'
@@ -106,7 +106,7 @@
 			Tags = @('SQLServer', 'DBA', 'DataTransfer', 'dbatools')
 
 			# ReleaseNotes of this module
-			ReleaseNotes = 'Initial version: schema scripting, constraint disable/enable, data copy, row-count compare, orchestration, GUI.'
+			ReleaseNotes = '0.1.20.0: Copy-sqmTableData auto-detects a columnstore destination and caps the SqlBulkCopy batch size to ColumnstoreBatchSizeCeiling (default 100,000), avoiding the direct-to-compressed-rowgroup insert path SQL Server triggers at 102,400+ rows per batch. Initial version: schema scripting, constraint disable/enable, data copy, row-count compare, orchestration, GUI.'
 
 			# External module dependencies
 			ExternalModuleDependencies = @('dbatools')
