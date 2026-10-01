@@ -167,6 +167,7 @@ function Invoke-sqmDirectBulkCopy
 	}
 
 	$reader = $null
+	$readerConsumed = $false
 	try
 	{
 		if ($PSCmdlet.ShouldProcess($Destination, "Bulk copy into $bracketedDest"))
@@ -189,11 +190,21 @@ function Invoke-sqmDirectBulkCopy
 			}
 
 			$bulkCopy.WriteToServer($reader)
+			$readerConsumed = $true
 		}
 	}
 	finally
 	{
-		if ($reader) { $reader.Close() }
+		# Close() auf einem NICHT zu Ende gelesenen Reader liest alle restlichen Zeilen vom Server und
+		# verwirft sie - nach einem Abbruch mitten im Chunk (Timeout, Fehler auf dem Ziel) wurde so der
+		# komplette Rest des Chunks noch uebers Netz gezogen (Quelle: lange ASYNC_NETWORK_IO, Aufruf
+		# haengt). Gemessen auf DEV01: Fehler nach 15.000 Zeilen, Rueckkehr erst nach 313 s. Cancel()
+		# bricht die Abfrage stattdessen auf dem Server ab.
+		if ($reader)
+		{
+			if (-not $readerConsumed) { try { $cmd.Cancel() } catch { } }
+			$reader.Close()
+		}
 		$bulkCopy.Close()
 		$bulkCopy.Dispose()
 		if ($srcServer.ConnectionContext.IsOpen) { $srcServer.ConnectionContext.SqlConnectionObject.Close() }

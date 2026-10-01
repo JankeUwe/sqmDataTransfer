@@ -1,5 +1,28 @@
 ﻿# sqmDataTransfer — Changelog
 
+## [0.1.22.0] — 2026-10-01
+
+### Abgebrochener Chunk zog den Rest der Quelle noch komplett uebers Netz
+
+`Invoke-sqmDirectBulkCopy` (Pfad jedes Chunk-Transfers und jedes `-SourceQuery`-Kopierens) hat im
+`finally` nur `$reader.Close()` aufgerufen. Auf einem nicht zu Ende gelesenen `SqlDataReader` liest
+`Close()` aber alle restlichen Zeilen vom Server und verwirft sie. Brach ein Chunk mitten drin ab
+(BulkCopyTimeout, PK-/Constraint-Verletzung oder Platzmangel auf dem Ziel), wurde trotzdem der
+komplette Rest des Chunks uebertragen: auf dem Server lange `ASYNC_NETWORK_IO` der lesenden Session,
+der Aufruf hing, bevor der Fehler ueberhaupt ankam.
+
+Gemessen auf DEV01 (600.000 Zeilen, ca. 470 MB, Ziel-PK-Verletzung nach 15.000 Zeilen): Rueckkehr
+nach **313 s**, mit Korrektur nach **5,2 s**. Jetzt wird die Abfrage vor dem Schliessen per
+`$cmd.Cancel()` auf dem Server abgebrochen, wenn der Reader nicht vollstaendig gelesen wurde. Der
+Erfolgsfall ist unveraendert (600.000/600.000 Zeilen).
+
+dbatools `Copy-DbaDbTableData` (Pfad ohne `-SourceQuery`) macht das ab 2.9.0 selbst; aeltere
+dbatools-Versionen haben dasselbe Problem.
+
+Geprueft und NICHT eingebaut: `SqlBulkCopy.EnableStreaming` mit `SequentialAccess` fuer
+LOB-Spalten (text) - bei 150.000 Zeilen/463 MB text warm 62 s gegenueber 63 s, gleicher
+Speicherbedarf, also kein messbarer Gewinn.
+
 ## [0.1.21.0] — 2026-10-01
 
 ### Chunk-Transfer: yyyyMMdd-Spalten werden erkannt und monatsweise gechunkt
