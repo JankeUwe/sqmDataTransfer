@@ -1,5 +1,51 @@
 ﻿# sqmDataTransfer — Changelog
 
+## [0.1.23.0] — 2026-10-01
+
+### Chunk-Transfer hing auf grossen Heaps: jeder Chunk las die ganze Quelltabelle
+
+Symptom beim Kunden (rund 360 Mio. Zeilen): nach etwa 100 Mio. Zeilen stand der Transfer immer
+wieder lange, die INSERT-BULK-Session auf dem ZIEL wartete auf `ASYNC_NETWORK_IO`. Das heisst:
+das Ziel hat alles geschrieben und wartet auf den Client - der Engpass liegt davor.
+
+Ursache: der Chunk wird per `SELECT * FROM <Quelle> WHERE <Chunk-Bereich>` gelesen. Auf einem Heap
+(oder einem Clustered Index, der nicht mit der Chunk-Spalte beginnt) waehlt SQL Server dafuer bei
+grossen Tabellen einen kompletten Table Scan, auch wenn ein Nonclustered Index auf der
+Chunk-Spalte existiert. Jeder Chunk liest damit die gesamte Quelltabelle; solange der Scan Seiten
+anderer Chunks liest, kommt beim Client nichts an. Nachgestellt auf DEV01 (Heap, 1,5 Mio. Zeilen,
+Index auf der Datumsspalte): Plan je Chunk = Table Scan. Kompletter Transfer mit 358 Tages-Chunks:
+mit Scan rund 30 s je Chunk, mit Index-Seek rund 6 s je Chunk. Ein einzelner Chunk isoliert
+gemessen unterscheidet sich auf dieser kleinen Labortabelle (650 MB, passt in den Speicher) kaum;
+der Vorteil waechst mit der Tabellengroesse, weil jeder Scan die ganze Tabelle liest.
+
+### Verbindungsleck: nach ~100 Chunks war der Verbindungspool erschoepft
+
+`Invoke-sqmDirectBulkCopy` (Pfad jedes Chunks) hat pro Aufruf zwei Server-Objekte per
+`Connect-DbaInstance` erzeugt, aber nur die Quellverbindung geschlossen. Pro Chunk blieb eine
+Verbindung offen, bis der Prozess endete (letzte Anweisung der haengenden Sessions: die
+Versionsabfrage des Verbindungsaufbaus). Nach rund 100 Chunks (Standard `Max Pool Size` 100)
+wartete jede weitere Verbindung 15 s und scheiterte mit "Timeout abgelaufen ... maximale
+Poolgroesse wurde erreicht"; der Chunk wurde als Fehler gemeldet. Bei Monats-Chunks von ca. 1 Mio.
+Zeilen entspricht das "nach etwa 100 Mio. Zeilen". Gemessen auf DEV01: vorher 3 -> 31 Sessions nach
+34 Chunks, 45 von 358 Chunks gescheitert; jetzt konstant 4-6 Sessions. Beide Server-Objekte werden
+im `finally` getrennt.
+
+- Neuer Parameter `Invoke-sqmChunkedTableTransfer -SourceAccess Auto|Scan|Seek` (Standard `Auto`):
+  gibt es einen aktiven Index, der mit der Chunk-Spalte beginnt, und mindestens 4 Chunks, wird
+  jeder Chunk `WITH (FORCESEEK)` ueber diesen Index gelesen. Ein Clustered Index mit der
+  Chunk-Spalte vorne braucht keinen Hinweis. Vor dem Lauf prueft ein `TOP (0)`-Probelauf, ob SQL
+  Server den Seek bilden kann; sonst bleibt `Auto` beim Scan (Warnung im Log). Ohne passenden Index
+  warnt der Lauf und empfiehlt einen.
+- Verifiziert auf DEV01: 130 Tages-Chunks per Seek (ueber der Poolgrenze von 100), Quelle und
+  Ziel identisch (EXCEPT 0), Sessions konstant.
+- `Docs/Diagnose-ChunkTransfer-Quelle.sql`: neues Diagnoseskript fuer die QUELLE (Wartetyp der
+  lesenden Session, Scan oder Seek im Plan, Scan-Fortschritt, vorhandene Indizes), dazu Hinweis
+  fuer die CPU-/Speicherpruefung des Client-Prozesses.
+- `Docs/Diagnose-ChunkTransfer-AsyncNetworkIO.sql` (Ziel): Syntaxfehler behoben (`AS FillFactor`
+  ist ein reserviertes Wort, das Skript lief nie bis zum Ende), `USE` der Zieldatenbank ergaenzt,
+  neue Abschnitte fuer freien Plattenplatz, Instant File Initialization, Autogrowth-Ereignisse mit
+  Dauer, Speicher-Grants und tempdb-Verbrauch.
+
 ## [0.1.22.0] — 2026-10-01
 
 ### Abgebrochener Chunk zog den Rest der Quelle noch komplett uebers Netz

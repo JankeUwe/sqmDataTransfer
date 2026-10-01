@@ -208,6 +208,15 @@ function Invoke-sqmDirectBulkCopy
 		$bulkCopy.Close()
 		$bulkCopy.Dispose()
 		if ($srcServer.ConnectionContext.IsOpen) { $srcServer.ConnectionContext.SqlConnectionObject.Close() }
+		# Beide Server-Objekte trennen: Connect-DbaInstance oeffnet je Aufruf eine Verbindung (letzte
+		# Anweisung: die Versionsabfrage), Invoke-DbaQuery arbeitet intern auf einer eigenen. Ohne
+		# Disconnect blieb pro Chunk eine Verbindung offen, bis der Prozess endet - nach ~100 Chunks
+		# war der Verbindungspool (Max Pool Size 100) erschoepft, jeder weitere Chunk wartete 15 s auf
+		# eine Verbindung und scheiterte. Auf DEV01 gemessen: 3 -> 31 Sessions nach 34 Chunks.
+		foreach ($srv in @($srcServer, $dstServer))
+		{
+			if ($srv) { try { $srv.ConnectionContext.Disconnect() } catch { } }
+		}
 	}
 
 	return [PSCustomObject]@{ RowsCopied = [int64]$bulkCopy.RowsCopied }

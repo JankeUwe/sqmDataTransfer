@@ -92,6 +92,21 @@
     Resuming a run works across granularities as long as the same granularity is used again (the
     per-chunk row-count comparison groups both sides the same way).
 
+.PARAMETER SourceAccess
+    How each chunk is read from the source: Auto (default), Scan or Seek.
+    On a heap, or a clustered index that does not lead with the chunk column, SQL Server usually
+    answers "WHERE <chunk range>" on a large table with a full table scan, even when a nonclustered
+    index on the chunk column exists. Every chunk then reads the WHOLE source table (120 month
+    chunks = 120 full scans); while the scan passes rows of other chunks nothing reaches the client,
+    and the INSERT BULK session on the destination waits on ASYNC_NETWORK_IO.
+    - Auto: if an active index leads with the chunk column and there are at least 4 chunks, each
+      chunk is read WITH (FORCESEEK) over that index. A clustered index leading with the chunk column
+      needs no hint. Without such an index a warning recommends creating one.
+    - Seek: always FORCESEEK, error if no suitable index exists.
+    - Scan: no hint (previous behaviour).
+    Before the run a TOP (0) probe checks that SQL Server can build the seek; if not, Auto falls back
+    to the scan with a warning in the log.
+
 .PARAMETER MaxChunkValues
     Safety cap on the number of distinct -ChunkColumn values this function will process. A
     near-continuous column (e.g. an exact timestamp) is the wrong choice for -ChunkColumn and would
@@ -235,6 +250,9 @@ function Invoke-sqmChunkedTableTransfer
 		[Parameter(Mandatory = $false)]
 		[ValidateSet('Auto', 'Value', 'Month')]
 		[string]$ChunkGranularity = 'Auto',
+		[Parameter(Mandatory = $false)]
+		[ValidateSet('Auto', 'Scan', 'Seek')]
+		[string]$SourceAccess = 'Auto',
 		[Parameter(Mandatory = $false)]
 		[int]$MaxChunkValues,
 		[Parameter(Mandatory = $false)]
@@ -510,6 +528,69 @@ function Invoke-sqmChunkedTableTransfer
 		}
 	}
 
+	# --- Zugriff auf die Quelle je Chunk: Scan oder Seek ---------------------------------------
+	# Auf einem Heap (oder einem Clustered Index, der NICHT mit der Chunk-Spalte beginnt) waehlt SQL
+	# Server fuer "WHERE <Chunk-Bereich>" bei grossen Tabellen meist einen kompletten Table Scan -
+	# auch wenn ein Nonclustered Index mit der Chunk-Spalte existiert. Dann liest JEDER Chunk die
+	# ganze Quelltabelle: bei 120 Monats-Chunks 120 vollstaendige Scans. Solange der Scan Bereiche
+	# ohne Zeilen des Chunks liest, kommt beim Client nichts an, und die INSERT-BULK-Session auf dem
+	# Ziel wartet auf ASYNC_NETWORK_IO. Live nachgestellt auf DEV01 (Heap + IX auf der Datumsspalte:
+	# Table Scan je Monats-Chunk). Mit FORCESEEK liest jeder Chunk nur seinen Bereich ueber den Index.
+	$sourceHint = ''
+	if ($SourceAccess -ne 'Scan')
+	{
+		$idxQuery = @"
+SELECT TOP (1) i.index_id, i.name
+FROM sys.indexes i
+JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.key_ordinal = 1
+JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+WHERE i.object_id = OBJECT_ID(N'$bracketed') AND i.is_disabled = 0 AND i.type IN (1, 2) AND i.has_filter = 0
+  AND c.name = N'$($ChunkColumn -replace "'", "''")'
+ORDER BY i.index_id
+"@
+		$seekIndex = @(Invoke-DbaQuery @srcConnParams -Query $idxQuery -As PSObject -EnableException) | Select-Object -First 1
+		$useSeek = $false
+		if (-not $seekIndex)
+		{
+			if ($SourceAccess -eq 'Seek') { throw "-SourceAccess Seek: auf $qualified gibt es keinen aktiven Index, der mit [$ChunkColumn] beginnt." }
+		}
+		elseif ([int]$seekIndex.index_id -eq 1)
+		{
+			# Clustered Index fuehrt mit der Chunk-Spalte: der Optimizer seekt ohnehin, kein Hinweis noetig
+		}
+		elseif ($SourceAccess -eq 'Seek' -or $chunkValues.Count -ge 4)
+		{
+			# Ab 4 Chunks liest jeder Scan ein Vielfaches dessen, was der Chunk braucht. Bei nur 2-3
+			# grossen Chunks kann ein Scan guenstiger sein als die Lookups - dann bleibt es beim Scan.
+			$useSeek = $true
+		}
+		if ($useSeek)
+		{
+			# Vorab pruefen, ob SQL Server den Seek bilden kann (Fehler 8622 sonst erst mitten im Lauf).
+			# TOP (0): wird nur kompiliert, liest keine Daten.
+			$probePredicate = & $bucket.Predicate $chunkValues[0]
+			try
+			{
+				Invoke-DbaQuery @srcConnParams -Query "SELECT TOP (0) * FROM $bracketed WITH (FORCESEEK) WHERE $probePredicate" -EnableException | Out-Null
+				$sourceHint = ' WITH (FORCESEEK)'
+				$msg = "Quelle: Chunks werden per Index-Seek ueber [$($seekIndex.name)] gelesen statt per Scan der ganzen Tabelle je Chunk ($($chunkValues.Count) Chunks)."
+				Write-Verbose $msg
+				Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'INFO'
+			}
+			catch
+			{
+				if ($SourceAccess -eq 'Seek') { throw "-SourceAccess Seek: SQL Server kann fuer [$ChunkColumn] keinen Seek bilden: $($_.Exception.Message)" }
+				Write-sqmTransferLog -Message "Quelle: Seek ueber [$($seekIndex.name)] nicht moeglich ($($_.Exception.Message)) - Chunks werden per Scan gelesen." -FunctionName $functionName -Level 'WARNING'
+			}
+		}
+		elseif (-not $seekIndex -or [int]$seekIndex.index_id -ne 1)
+		{
+			$msg = "Quelle: kein Index mit [$ChunkColumn] als fuehrender Spalte$(if ($seekIndex) { ' genutzt (weniger als 4 Chunks)' }) - jeder Chunk liest die gesamte Quelltabelle. Bei vielen Chunks auf einer grossen Tabelle einen Index auf [$ChunkColumn] anlegen."
+			Write-Warning $msg
+			Write-sqmTransferLog -Message $msg -FunctionName $functionName -Level 'WARNING'
+		}
+	}
+
 	# Schluessel ist der per Format-SqlLiteral formatierte Wert (siehe Funktion oben) - derselbe Text
 	# wird unten fuer jeden Chunk als Lookup-Key verwendet, unabhaengig vom .NET-Laufzeittyp.
 	$srcCountByChunk = @{}
@@ -681,7 +762,7 @@ function Invoke-sqmChunkedTableTransfer
 				}
 			}
 
-			$chunkSql = "SELECT $columnList FROM $bracketed WHERE $chunkPredicate"
+			$chunkSql = "SELECT $columnList FROM $bracketed$sourceHint WHERE $chunkPredicate"
 			$transferParams = @{
 				Source				   = $Source
 				SourceDatabase		   = $SourceDatabase

@@ -8,7 +8,7 @@ Zielgruppe dieses Handbuchs: SQL-Server-DBAs, die das Modul operativ einsetzen (
 Entwicklung des Moduls selbst). Fuer die Versionshistorie siehe
 [CHANGELOG.md](../CHANGELOG.md), fuer eine Kurzuebersicht [README.md](../README.md).
 
-Stand: 2026-10-01, sqmDataTransfer 0.1.22.0. Seit sqmPartitionTool 1.15.0.0 nutzt auch
+Stand: 2026-10-01, sqmDataTransfer 0.1.23.0. Seit sqmPartitionTool 1.15.0.0 nutzt auch
 sqmPartitionTool diese Kopier-Engine (Archiv-Migration, neu partitionierte Kopie, Relocation).
 
 ---
@@ -238,8 +238,22 @@ Default zu scheitern.
   Chunks erst noch liest und verwirft (gemessen: Fehler nach 15.000 von 600.000 Zeilen, Rueckkehr
   nach 313 s; jetzt nach 5 s).
 
+**Lesen auf der Quelle (`-SourceAccess`).** Jeder Chunk wird per `SELECT * ... WHERE <Bereich>`
+gelesen. Auf einem Heap oder einem Clustered Index, der nicht mit der Chunk-Spalte beginnt, waehlt
+SQL Server dafuer bei grossen Tabellen einen kompletten Scan, auch wenn ein Index auf der
+Chunk-Spalte existiert: jeder Chunk liest dann die ganze Tabelle. Seit 0.1.23.0 liest `Auto`
+(Standard) jeden Chunk `WITH (FORCESEEK)` ueber einen Index, der mit der Chunk-Spalte beginnt,
+sobald es mindestens 4 Chunks gibt (vorher Probelauf, sonst Scan mit Warnung). `Seek` erzwingt
+das, `Scan` schaltet es ab. Ohne passenden Index warnt der Lauf: bei vielen Chunks auf einer
+grossen Tabelle vorher einen Index auf die Chunk-Spalte anlegen.
+
 **Wartezeiten richtig deuten.** SqlBulkCopy liest die Quelle ueber den Client und schreibt ueber
 den Client ins Ziel:
+
+- `ASYNC_NETWORK_IO` an der **schreibenden** Session (`INSERT BULK`) heisst: das Ziel hat alles
+  geschrieben und wartet auf den Client. Ziel, Indizes, Dateien und Plattenplatz sind dann nicht
+  die Ursache. Mit `Docs/Diagnose-ChunkTransfer-Quelle.sql` auf der Quelle pruefen, ob dort ein
+  Scan je Chunk laeuft (siehe `-SourceAccess`) oder der Client-Prozess selbst ausgelastet ist.
 
 - `ASYNC_NETWORK_IO` an der **lesenden** Session ist normal, solange das Schreiben langsamer ist als
   das Lesen. Der Engpass zeigt sich an der **schreibenden** Session (`INSERT BULK`): `WRITELOG`
@@ -250,9 +264,9 @@ den Client ins Ziel:
 - Waehrend des Transfers **keine Index-Wartung, kein TRUNCATE, kein Partitions-SPLIT** auf der
   Quelltabelle: die lesende Session haelt eine Schema-Sperre, die wartende DDL blockiert alles
   dahinter.
-- Ein Diagnose-Skript, das beide Sessions, ihre Wartezeiten, Recovery-Modell und Log-Fuellstand
-  in einem Durchgang ausliest (nur DMVs, kein Tabellenscan), liegt unter
-  `Docs/Diagnose-ChunkTransfer-AsyncNetworkIO.sql`.
+- Diagnose-Skripte (nur DMVs, kein Tabellenscan): `Docs/Diagnose-ChunkTransfer-AsyncNetworkIO.sql`
+  fuer das ZIEL (Wartezeiten, Log, Dateien, Plattenplatz, Autogrowth, Speicher) und
+  `Docs/Diagnose-ChunkTransfer-Quelle.sql` fuer die QUELLE (Scan oder Seek je Chunk, Scan-Fortschritt).
 
 **Schritt 4 — Abschluss:** ein einziger konsolidierter `GROUP BY`-Scan auf dem Ziel vergleicht
 alle verarbeiteten Chunks gegen die Ausgangs-Snapshots, statt eines Scans pro Chunk. Ein
@@ -398,6 +412,13 @@ Show-sqmTableTransferGui
 - **Eine `INT`-Datumsspalte wird nicht als Kandidat erkannt** (vor 0.1.21.0 normal): ab 0.1.21.0
   nur dann nicht, wenn die Spalte keine Statistik hat oder Werte ausserhalb `YYYYMMDD` enthaelt.
   `-ChunkColumn` explizit angeben.
+- **Transfer steht immer wieder lange, INSERT BULK auf dem Ziel wartet auf `ASYNC_NETWORK_IO`:**
+  die Quelle liefert nicht nach. Typisch: Heap-Quelle, jeder Chunk scannt die ganze Tabelle. Ab
+  0.1.23.0 automatisch per Index-Seek, sofern ein Index mit der Chunk-Spalte vorne existiert;
+  sonst einen anlegen. Pruefen mit `Docs/Diagnose-ChunkTransfer-Quelle.sql`.
+- **Ab etwa 100 Chunks scheitern Chunks mit "Timeout abgelaufen ... maximale Poolgroesse wurde
+  erreicht"** (vor 0.1.23.0): jeder Chunk liess eine Verbindung offen. Auf 0.1.23.0 aktualisieren
+  und den Lauf erneut starten, er setzt bei den unvollstaendigen Chunks fort.
 - **Ein abgebrochener Chunk-Transfer haengt lange, bevor der Fehler erscheint:** vor 0.1.22.0 wurde
   der Rest des Chunks noch gelesen. Auf 0.1.22.0 aktualisieren.
 - **"Execution Timeout Expired" mitten in einem Chunk-Transfer**: ein einzelner Batch ist ueber
