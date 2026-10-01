@@ -8,7 +8,7 @@ Zielgruppe dieses Handbuchs: SQL-Server-DBAs, die das Modul operativ einsetzen (
 Entwicklung des Moduls selbst). Fuer die Versionshistorie siehe
 [CHANGELOG.md](../CHANGELOG.md), fuer eine Kurzuebersicht [README.md](../README.md).
 
-Stand: 2026-10-01, sqmDataTransfer 0.1.23.0. Seit sqmPartitionTool 1.15.0.0 nutzt auch
+Stand: 2026-10-01, sqmDataTransfer 0.1.24.0. Seit sqmPartitionTool 1.15.0.0 nutzt auch
 sqmPartitionTool diese Kopier-Engine (Archiv-Migration, neu partitionierte Kopie, Relocation).
 
 ---
@@ -269,7 +269,11 @@ den Client ins Ziel:
   `Docs/Diagnose-ChunkTransfer-Quelle.sql` fuer die QUELLE (Scan oder Seek je Chunk, Scan-Fortschritt).
 
 **Schritt 4 — Abschluss:** ein einziger konsolidierter `GROUP BY`-Scan auf dem Ziel vergleicht
-alle verarbeiteten Chunks gegen die Ausgangs-Snapshots, statt eines Scans pro Chunk. Ein
+alle verarbeiteten Chunks gegen die Ausgangs-Snapshots, statt eines Scans pro Chunk. Weicht ein
+Chunk ab, wird die Quelle fuer diesen Chunk live nachgezaehlt; die Meldung sagt dann, ob die Quelle
+waehrend des Laufs gewachsen ist (alles uebertragen), nach dem Kopieren weiter gewachsen ist (erneuter
+Lauf zieht nach) oder das Ziel mehr Zeilen hat als die Quelle. Jeder fehlgeschlagene Schritt wird am
+Ende mit Chunk, Schritt und Meldung auf der Konsole ausgegeben. Ein
 HTML-Report wird geschrieben (ausser `-NoReport`), inklusive `Compare-sqmTableRowCount -Fast`
 (liest `sys.dm_db_partition_stats`, kein `COUNT(*)`).
 

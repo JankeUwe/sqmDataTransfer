@@ -1,5 +1,23 @@
 ﻿# sqmDataTransfer — Changelog
 
+## [0.1.24.0] — 2026-10-01
+
+### Fehlgeschlagene Schritte werden mit Ursache ausgegeben, Abweichungen live nachgezaehlt
+
+- Am Ende des Laufs gibt `Invoke-sqmChunkedTableTransfer` jeden Schritt mit Status Failed,
+  Mismatch oder NotFound direkt auf der Konsole aus (Chunk, Schritt, Meldung) - bisher stand dort
+  nur die Anzahl ("1 mit Fehler/Mismatch/NotFound"), die Ursache musste im Log oder Report gesucht
+  werden.
+- Weicht ein Chunk beim Abschlussvergleich ab, wird die Quelle fuer genau diesen Chunk live
+  nachgezaehlt (mit demselben Zugriffsweg wie beim Kopieren). Die Meldung unterscheidet: Quelle
+  waehrend des Laufs gewachsen und alles uebertragen (dann Success), Quelle nach dem Kopieren weiter
+  gewachsen (Mismatch, ein erneuter Lauf zieht nach), oder Ziel hat MEHR Zeilen als die Quelle
+  (Mismatch, Loeschungen in der Quelle oder Duplikate pruefen). Jede Abweichung steht zusaetzlich
+  als Warnung im Log.
+- Verifiziert auf DEV01: Zeilen waehrend eines Laufs in einen noch nicht kopierten Chunk eingefuegt
+  -> Success mit Hinweis; in einen bereits kopierten Chunk -> ein zweiter Lauf zieht sie nach,
+  Quelle und Ziel identisch, keine Duplikate.
+
 ## [0.1.23.0] — 2026-10-01
 
 ### Chunk-Transfer hing auf grossen Heaps: jeder Chunk las die ganze Quelltabelle

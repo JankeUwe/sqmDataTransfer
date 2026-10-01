@@ -807,7 +807,7 @@ ORDER BY i.index_id
 			# Der Nachvergleich fuer diesen Chunk wird NICHT hier live abgefragt (war vorher ein
 			# zweiter COUNT_BIG(*)-Scan beidseitig pro Chunk) - stattdessen unten, nach dem letzten
 			# Chunk, in einem einzigen GROUP BY-Scan fuer ALLE verarbeiteten Chunks auf einmal.
-			$processedChunks.Add([PSCustomObject]@{ ChunkValue = $chunkValue; Literal = $literal })
+			$processedChunks.Add([PSCustomObject]@{ ChunkValue = $chunkValue; Literal = $literal; Predicate = $chunkPredicate })
 		}
 
 		# --- Ein einziger GROUP BY-Scan auf dem Ziel statt eines COUNT_BIG(*)-Scans PRO verarbeitetem
@@ -829,12 +829,47 @@ ORDER BY i.index_id
 					$dstCountAfter = $finalDstCountByChunk[$pc.Literal]
 					if (-not $dstCountAfter) { $dstCountAfter = 0 }
 					$chunkMatch = $srcCountAfter -eq $dstCountAfter
+					$compareMsg = "Quelle=$srcCountAfter Ziel=$dstCountAfter Differenz=$($dstCountAfter - $srcCountAfter)"
+					if (-not $chunkMatch)
+					{
+						# Die Quellzahl stammt aus dem Snapshot vom Laufbeginn. Bei einer weiterhin aktiven
+						# Quelle (typisch: laufender Monat) kommen bis zum Kopieren dieses Chunks neue Zeilen
+						# hinzu - das Ziel hat dann MEHR Zeilen als der Snapshot, ohne dass etwas fehlt. Vor
+						# einer Mismatch-Meldung daher die Quelle fuer genau diesen Chunk live nachzaehlen
+						# (mit demselben Zugriffsweg wie beim Kopieren, also per Seek, wenn moeglich).
+						try
+						{
+							$srcLive = [int64](Invoke-DbaQuery @srcConnParams -Query "SELECT COUNT_BIG(*) AS Cnt FROM $bracketed$sourceHint WHERE $($pc.Predicate)" -As PSObject -EnableException -QueryTimeout 3600)[0].Cnt
+							if ($srcLive -eq $dstCountAfter)
+							{
+								$chunkMatch = $true
+								$compareMsg = "Quelle=$srcLive Ziel=$dstCountAfter Differenz=0 (Quelle ist waehrend des Laufs von $srcCountAfter auf $srcLive gewachsen, alle Zeilen uebertragen)"
+							}
+							elseif ($srcLive -gt $dstCountAfter)
+							{
+								$compareMsg = "Quelle=$srcLive Ziel=$dstCountAfter Differenz=$($dstCountAfter - $srcLive) (Quelle ist nach dem Kopieren dieses Chunks weiter gewachsen - ein erneuter Lauf zieht die Differenz nach)"
+							}
+							else
+							{
+								$compareMsg = "Quelle=$srcLive Ziel=$dstCountAfter Differenz=$($dstCountAfter - $srcLive) (Ziel hat MEHR Zeilen als die Quelle - pruefen: Zeilen in der Quelle geloescht, oder Duplikate im Ziel)"
+							}
+						}
+						catch
+						{
+							$compareMsg += " (Live-Nachzaehlung der Quelle fehlgeschlagen: $($_.Exception.Message))"
+						}
+					}
 					$allResults.Add([PSCustomObject]@{
 							Table = $qualified; Chunk = "$($pc.ChunkValue)"; Step = 'CompareRowCount'
 							Status = $(if ($chunkMatch) { 'Success' } else { 'Mismatch' })
-							Message = "Quelle=$srcCountAfter Ziel=$dstCountAfter Differenz=$($dstCountAfter - $srcCountAfter)"
+							Message = $compareMsg
 							Timestamp = (Get-Date)
 						})
+					if (-not $chunkMatch)
+					{
+						Write-sqmTransferLog -Message "Chunk $($pc.ChunkValue): $compareMsg" -FunctionName $functionName -Level 'WARNING'
+						Write-Warning "Chunk $($pc.ChunkValue): $compareMsg"
+					}
 				}
 			}
 			catch
@@ -876,6 +911,11 @@ ORDER BY i.index_id
 	$summaryMsg = "Invoke-sqmChunkedTableTransfer abgeschlossen fuer $qualified - $chunkTotal Chunk(s), $skippedChunks bereits vollstaendig uebersprungen, $failCount mit Fehler/Mismatch/NotFound."
 	Write-sqmTransferLog -Message $summaryMsg -FunctionName $functionName -Level 'INFO'
 	Write-Host $summaryMsg -ForegroundColor $(if ($failCount -gt 0) { 'Yellow' } else { 'Green' })
+	# Nicht nur die Anzahl melden - welcher Chunk, welcher Schritt und warum, direkt auf der Konsole
+	foreach ($f in @($allResults | Where-Object Status -in @('Failed', 'Mismatch', 'NotFound')))
+	{
+		Write-Host ("  {0,-9} Chunk {1}, Schritt {2}: {3}" -f $f.Status, $f.Chunk, $f.Step, $f.Message) -ForegroundColor Yellow
+	}
 
 	if (-not $NoReport)
 	{
