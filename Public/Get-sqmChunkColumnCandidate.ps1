@@ -15,7 +15,7 @@
     Candidates are the table's date-typed columns (date, datetime, datetime2, smalldatetime,
     datetimeoffset), integer columns whose name follows a period convention (Jahr, Year,
     Monat, Month, Periode, Quartal, ...), and int/bigint/char/varchar columns holding yyyyMMdd
-    dates (e.g. VTDAT = 20240115) whatever their name - recognised because every key of the
+    dates (e.g. BOOKDATE = 20240115) whatever their name - recognised because every key of the
     column's statistics histogram is a valid yyyyMMdd date. A chunked transfer splits on
     reporting periods, not on arbitrary data.
 
@@ -133,7 +133,7 @@ function Get-sqmChunkColumnCandidate
 	# Zusaetzlich zur Schaetzung: kleinster/groesster Histogrammschluessel (typisiert, als
 	# sql_variant) und wie viele Schluessel wie ein yyyyMMdd-Datum aussehen. Damit wird eine
 	# int-/char-Spalte mit Werten wie 20240115 als Datums-Surrogat erkannt, egal wie sie heisst
-	# (z.B. VTDAT). Nur Konvertierung nach varchar - eine Konvertierung des sql_variant nach
+	# (z.B. BOOKDATE). Nur Konvertierung nach varchar - eine Konvertierung des sql_variant nach
 	# datetime2 wuerde fuer int-Schluessel einen Ueberlauf werfen, auch in einem CASE-Zweig.
 	$query = @"
 SELECT  c.name                          AS ColumnName,

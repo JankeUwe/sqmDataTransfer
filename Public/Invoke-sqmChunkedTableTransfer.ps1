@@ -83,7 +83,7 @@
     Auto (default), Value or Month.
     - Value: one chunk per distinct -ChunkColumn value (WHERE [col] = value).
     - Month: one chunk per calendar month, for a day-resolution column - a date type, or an
-      int/bigint/char/varchar column holding yyyyMMdd values (e.g. VTDAT = 20240115). The chunk
+      int/bigint/char/varchar column holding yyyyMMdd values (e.g. BOOKDATE = 20240115). The chunk
       filter is a range on the bare column ([col] >= 20240100 AND [col] < 20240200, or the date
       equivalent, or LIKE '202401%'), so an index on the column still supports a seek.
     - Auto: uses Get-sqmChunkColumnCandidate's SuggestedGranularity for the chosen column (also for
@@ -367,7 +367,7 @@ function Invoke-sqmChunkedTableTransfer
 	}
 
 	# --- Granularitaet: ein Chunk pro Wert, oder pro Kalendermonat (tagesgenaue Spalte wie
-	# VTDAT = yyyyMMdd). 'Auto' uebernimmt die Empfehlung von Get-sqmChunkColumnCandidate - auch fuer
+	# BOOKDATE = yyyyMMdd). 'Auto' uebernimmt die Empfehlung von Get-sqmChunkColumnCandidate - auch fuer
 	# eine explizit angegebene Spalte (reine Metadatenabfrage).
 	$chunkColType = (Invoke-DbaQuery @srcConnParams -Query "SELECT TYPE_NAME(user_type_id) AS DataType FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND name = N'$($ChunkColumn -replace "'", "''")'" -As PSObject -EnableException | Select-Object -First 1).DataType
 	if (-not $chunkColType) { throw "Chunk-Spalte '$ChunkColumn' existiert nicht in $qualified auf '$Source'.'$SourceDatabase'." }
