@@ -13,9 +13,15 @@
         2. How many chunks would each of them produce?
 
     Candidates are the table's date-typed columns (date, datetime, datetime2, smalldatetime,
-    datetimeoffset) plus integer columns whose name follows a period convention (Jahr, Year,
-    Monat, Month, Periode, Quartal, ...) - a chunked transfer splits on reporting periods, not on
-    arbitrary data.
+    datetimeoffset), integer columns whose name follows a period convention (Jahr, Year,
+    Monat, Month, Periode, Quartal, ...), and int/bigint/char/varchar columns holding yyyyMMdd
+    dates (e.g. VTDAT = 20240115) whatever their name - recognised because every key of the
+    column's statistics histogram is a valid yyyyMMdd date. A chunked transfer splits on
+    reporting periods, not on arbitrary data.
+
+    Day-resolution columns (yyyyMMdd surrogates, and date columns with clearly more distinct values
+    than months) get SuggestedGranularity 'Month': one chunk per calendar month instead of one per
+    day. EstimatedChunks is then the month span between the smallest and largest histogram key.
 
     The distinct-value count per candidate is ESTIMATED from the column's statistics histogram
     (SUM(distinct_range_rows) + one row per histogram step, via sys.dm_db_stats_histogram) - a
@@ -59,6 +65,7 @@
 
 .OUTPUTS
     PSCustomObject per candidate: Table, ColumnName, DataType, EstimatedDistinctValues,
+    SuggestedGranularity ('Value' or 'Month'), EstimatedChunks, IsDateSurrogate,
     EstimateSource ('Statistics', 'Exact' or 'Unknown'), TableRows, AvgRowsPerChunk, Suitable,
     Reason.
 
@@ -123,16 +130,22 @@ function Get-sqmChunkColumnCandidate
 	# Wert bei (COUNT_BIG(*)), dazu die distinkten Werte im Intervall davor (distinct_range_rows).
 	# Das ist die uebliche Ableitung der Kardinalitaet aus dem Histogramm und kostet keinen
 	# Tabellenzugriff.
+	# Zusaetzlich zur Schaetzung: kleinster/groesster Histogrammschluessel (typisiert, als
+	# sql_variant) und wie viele Schluessel wie ein yyyyMMdd-Datum aussehen. Damit wird eine
+	# int-/char-Spalte mit Werten wie 20240115 als Datums-Surrogat erkannt, egal wie sie heisst
+	# (z.B. VTDAT). Nur Konvertierung nach varchar - eine Konvertierung des sql_variant nach
+	# datetime2 wuerde fuer int-Schluessel einen Ueberlauf werfen, auch in einem CASE-Zweig.
 	$query = @"
 SELECT  c.name                          AS ColumnName,
         TYPE_NAME(c.user_type_id)       AS DataType,
         est.EstDistinct                 AS EstimatedDistinctValues,
+        est.KeyCnt, est.DayKeyCnt, est.MinKey, est.MaxKey,
         (SELECT SUM(ps.row_count)
          FROM sys.dm_db_partition_stats ps
          WHERE ps.object_id = c.object_id AND ps.index_id IN (0, 1)) AS TableRows
 FROM sys.columns c
 OUTER APPLY (
-    SELECT TOP (1) h.EstDistinct
+    SELECT TOP (1) h.EstDistinct, h.KeyCnt, h.DayKeyCnt, h.MinKey, h.MaxKey
     FROM sys.stats s
     JOIN sys.stats_columns sc
       ON  sc.object_id = s.object_id
@@ -140,7 +153,13 @@ OUTER APPLY (
       AND sc.stats_column_id = 1
       AND sc.column_id = c.column_id
     CROSS APPLY (
-        SELECT SUM(hh.distinct_range_rows) + COUNT_BIG(*) AS EstDistinct
+        SELECT SUM(hh.distinct_range_rows) + COUNT_BIG(*) AS EstDistinct,
+               COUNT(hh.range_high_key) AS KeyCnt,
+               SUM(CASE WHEN LEN(CONVERT(varchar(30), hh.range_high_key)) = 8
+                         AND CONVERT(varchar(30), hh.range_high_key) BETWEEN '19000101' AND '29991231'
+                         AND TRY_CONVERT(date, CONVERT(varchar(30), hh.range_high_key), 112) IS NOT NULL THEN 1 ELSE 0 END) AS DayKeyCnt,
+               MIN(hh.range_high_key) AS MinKey,
+               MAX(hh.range_high_key) AS MaxKey
         FROM sys.dm_db_stats_histogram(s.object_id, s.stats_id) hh
     ) h
     WHERE s.object_id = c.object_id
@@ -148,13 +167,8 @@ OUTER APPLY (
 ) est
 WHERE c.object_id = OBJECT_ID(N'$qualified')
   AND c.is_computed = 0
-  AND (
-        TYPE_NAME(c.user_type_id) IN ('date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset')
-     OR (TYPE_NAME(c.user_type_id) IN ('int', 'smallint', 'tinyint', 'bigint')
-         AND (c.name LIKE '%jahr%' OR c.name LIKE '%year%' OR c.name LIKE '%monat%'
-           OR c.name LIKE '%month%' OR c.name LIKE '%periode%' OR c.name LIKE '%period%'
-           OR c.name LIKE '%quartal%' OR c.name LIKE '%quarter%'))
-      )
+  AND TYPE_NAME(c.user_type_id) IN ('date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset',
+                                    'int', 'smallint', 'tinyint', 'bigint', 'char', 'varchar', 'nchar', 'nvarchar')
 ORDER BY c.column_id
 "@
 
@@ -179,14 +193,48 @@ ORDER BY c.column_id
 
 	# Namenskonventionen, hoechste Prioritaet zuerst - dieselbe Reihenfolge, die
 	# Get-sqmSuggestedChunkColumn schon verwendet hat.
-	$patterns = @('stichtag', 'reportingdate', '^dat_', '^dtm', 'datum', 'date', 'periode', 'period', 'jahr', 'year', 'monat', 'month', 'quartal', 'quarter')
+	$patterns = @('stichtag', 'reportingdate', '^dat_', '^dtm', 'datum', 'date', 'periode', 'period', 'jahr', 'year', 'monat', 'month', 'quartal', 'quarter', 'dat')
+	$dateTypes = @('date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset')
+	$periodNamePattern = 'jahr|year|monat|month|periode|period|quartal|quarter'
 
 	$results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 	foreach ($row in $rows)
 	{
 		$columnName = [string]$row.ColumnName
+		$dataType = [string]$row.DataType
 		$tableRows = if ($null -ne $row.TableRows -and $row.TableRows -isnot [System.DBNull]) { [int64]$row.TableRows } else { $null }
+
+		# Welche Art Kandidat? Datumstyp / yyyyMMdd-Surrogat (alle Histogrammschluessel sind gueltige
+		# Tagesdaten) / Ganzzahl mit Perioden-Namen (bisheriges Verhalten). Alles andere ist kein Kandidat.
+		$keyCnt = if ($row.KeyCnt -is [System.DBNull] -or $null -eq $row.KeyCnt) { 0 } else { [int]$row.KeyCnt }
+		$dayKeyCnt = if ($row.DayKeyCnt -is [System.DBNull] -or $null -eq $row.DayKeyCnt) { 0 } else { [int]$row.DayKeyCnt }
+		$isDateType = $dataType -in $dateTypes
+		$isDaySurrogate = (-not $isDateType) -and $dataType -in @('int', 'bigint', 'char', 'varchar', 'nchar', 'nvarchar') -and $keyCnt -ge 2 -and $dayKeyCnt -eq $keyCnt
+		$isPeriodInt = $dataType -in @('int', 'smallint', 'tinyint', 'bigint') -and $columnName -match $periodNamePattern
+		if (-not ($isDateType -or $isDaySurrogate -or $isPeriodInt)) { continue }
+
+		# Monatsspanne aus kleinstem/groesstem Histogrammschluessel - Grundlage fuer Monats-Chunks
+		$monthSpan = $null
+		$minKey = $row.MinKey; $maxKey = $row.MaxKey
+		if ($null -ne $minKey -and $minKey -isnot [System.DBNull] -and $null -ne $maxKey -and $maxKey -isnot [System.DBNull])
+		{
+			try
+			{
+				$toDate = {
+					param($k)
+					if ($k -is [datetimeoffset]) { return $k.DateTime }
+					if ($k -is [datetime]) { return $k }
+					[datetime]::ParseExact("$k".Trim(), 'yyyyMMdd', [System.Globalization.CultureInfo]::InvariantCulture)
+				}
+				if ($isDateType -or $isDaySurrogate)
+				{
+					$minD = & $toDate $minKey; $maxD = & $toDate $maxKey
+					$monthSpan = ($maxD.Year * 12 + $maxD.Month) - ($minD.Year * 12 + $minD.Month) + 1
+				}
+			}
+			catch { $monthSpan = $null }
+		}
 
 		$estimate = $null
 		$estimateSource = 'Unknown'
@@ -218,34 +266,47 @@ ORDER BY c.column_id
 			if ($columnName -match $patterns[$i]) { $nameRank = $i; break }
 		}
 
+		# Tagesgenaue Spalte (yyyyMMdd-Surrogat, oder Datumstyp mit deutlich mehr Werten als Monaten)
+		# -> monatsweise chunken: ein Chunk pro Tag waere bei Jahren an Daten zu kleinteilig.
+		$granularity = 'Value'
+		if ($null -ne $monthSpan -and $monthSpan -ge 2 -and $null -ne $estimate -and ($isDaySurrogate -or $estimate -gt $monthSpan * 1.5))
+		{
+			$granularity = 'Month'
+		}
+		$chunks = if ($granularity -eq 'Month') { [int64]$monthSpan } else { $estimate }
+		$formatText = if ($isDaySurrogate) { ' (yyyyMMdd-Werte)' } else { '' }
+
 		$suitable = $false
 		$reason = ''
-		if ($null -eq $estimate)
+		if ($null -eq $chunks)
 		{
 			$reason = 'Keine Statistik auf der Spalte - Chunk-Anzahl unbekannt. Mit -Exact exakt ermitteln oder Statistik anlegen.'
 		}
-		elseif ($estimate -lt 2)
+		elseif ($chunks -lt 2)
 		{
-			$reason = "Nur $estimate unterschiedliche(r) Wert(e) - ergibt keine Aufteilung."
+			$reason = "Nur $chunks unterschiedliche(r) Wert(e) - ergibt keine Aufteilung."
 		}
-		elseif ($estimate -gt $MaxChunkValues)
+		elseif ($chunks -gt $MaxChunkValues)
 		{
-			$reason = "$estimate unterschiedliche Werte - mehr als MaxChunkValues ($MaxChunkValues), zu feingranular fuer einen Chunk-Transfer."
+			$reason = "$chunks Chunks - mehr als MaxChunkValues ($MaxChunkValues), zu feingranular fuer einen Chunk-Transfer."
 		}
 		else
 		{
 			$suitable = $true
-			$reason = "$estimate Chunk(s)."
+			$reason = if ($granularity -eq 'Month') { "$chunks Monats-Chunk(s)$formatText, statt $estimate Einzelwerten." } else { "$chunks Chunk(s)$formatText." }
 		}
 
 		$avgRowsPerChunk = $null
-		if ($null -ne $estimate -and $estimate -gt 0 -and $null -ne $tableRows) { $avgRowsPerChunk = [int64][math]::Round($tableRows / $estimate) }
+		if ($null -ne $chunks -and $chunks -gt 0 -and $null -ne $tableRows) { $avgRowsPerChunk = [int64][math]::Round($tableRows / $chunks) }
 
 		$results.Add([PSCustomObject]@{
 				Table				    = "$schemaName.$tableName"
 				ColumnName			    = $columnName
-				DataType			    = [string]$row.DataType
+				DataType			    = $dataType
 				EstimatedDistinctValues = $estimate
+				SuggestedGranularity    = $granularity
+				EstimatedChunks		    = $chunks
+				IsDateSurrogate		    = $isDaySurrogate
 				EstimateSource		    = $estimateSource
 				TableRows			    = $tableRows
 				AvgRowsPerChunk		    = $avgRowsPerChunk

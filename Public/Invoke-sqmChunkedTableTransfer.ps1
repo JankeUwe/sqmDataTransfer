@@ -79,6 +79,19 @@
     candidate qualifies, the function throws and names what it rejected and why, rather than
     guessing.
 
+.PARAMETER ChunkGranularity
+    Auto (default), Value or Month.
+    - Value: one chunk per distinct -ChunkColumn value (WHERE [col] = value).
+    - Month: one chunk per calendar month, for a day-resolution column - a date type, or an
+      int/bigint/char/varchar column holding yyyyMMdd values (e.g. VTDAT = 20240115). The chunk
+      filter is a range on the bare column ([col] >= 20240100 AND [col] < 20240200, or the date
+      equivalent, or LIKE '202401%'), so an index on the column still supports a seek.
+    - Auto: uses Get-sqmChunkColumnCandidate's SuggestedGranularity for the chosen column (also for
+      an explicitly given -ChunkColumn): Month for yyyyMMdd surrogates and for date columns with
+      clearly more distinct values than months, Value otherwise.
+    Resuming a run works across granularities as long as the same granularity is used again (the
+    per-chunk row-count comparison groups both sides the same way).
+
 .PARAMETER MaxChunkValues
     Safety cap on the number of distinct -ChunkColumn values this function will process. A
     near-continuous column (e.g. an exact timestamp) is the wrong choice for -ChunkColumn and would
@@ -220,6 +233,9 @@ function Invoke-sqmChunkedTableTransfer
 		[Parameter(Mandatory = $false)]
 		[string]$ChunkColumn,
 		[Parameter(Mandatory = $false)]
+		[ValidateSet('Auto', 'Value', 'Month')]
+		[string]$ChunkGranularity = 'Auto',
+		[Parameter(Mandatory = $false)]
 		[int]$MaxChunkValues,
 		[Parameter(Mandatory = $false)]
 		[switch]$Truncate,
@@ -344,10 +360,31 @@ function Invoke-sqmChunkedTableTransfer
 
 		$ChunkColumn = $usable[0].ColumnName
 		$chunkColumnAutoDetected = $true
-		$autoMessage = "Chunk-Spalte automatisch gewaehlt: [$ChunkColumn] ($($usable[0].DataType), geschaetzt $($usable[0].EstimatedDistinctValues) Chunk(s), " + `
+		$autoMessage = "Chunk-Spalte automatisch gewaehlt: [$ChunkColumn] ($($usable[0].DataType), Granularitaet $($usable[0].SuggestedGranularity), geschaetzt $($usable[0].EstimatedChunks) Chunk(s), " + `
 		"ca. $($usable[0].AvgRowsPerChunk) Zeile(n) pro Chunk, Quelle der Schaetzung: $($usable[0].EstimateSource))."
 		Write-Verbose $autoMessage
 		Write-sqmTransferLog -Message $autoMessage -FunctionName $functionName -Level 'INFO'
+	}
+
+	# --- Granularitaet: ein Chunk pro Wert, oder pro Kalendermonat (tagesgenaue Spalte wie
+	# VTDAT = yyyyMMdd). 'Auto' uebernimmt die Empfehlung von Get-sqmChunkColumnCandidate - auch fuer
+	# eine explizit angegebene Spalte (reine Metadatenabfrage).
+	$chunkColType = (Invoke-DbaQuery @srcConnParams -Query "SELECT TYPE_NAME(user_type_id) AS DataType FROM sys.columns WHERE object_id = OBJECT_ID(N'$bracketed') AND name = N'$($ChunkColumn -replace "'", "''")'" -As PSObject -EnableException | Select-Object -First 1).DataType
+	if (-not $chunkColType) { throw "Chunk-Spalte '$ChunkColumn' existiert nicht in $qualified auf '$Source'.'$SourceDatabase'." }
+	if ($ChunkGranularity -eq 'Auto')
+	{
+		$granularityInfo = if ($chunkColumnAutoDetected) { $usable[0] }
+		else
+		{
+			@(Get-sqmChunkColumnCandidate -SqlInstance $Source -Database $SourceDatabase -Table $Table -SqlCredential $srcCred -MaxChunkValues $MaxChunkValues -IncludeUnsuitable |
+				Where-Object { $_.ColumnName -eq $ChunkColumn }) | Select-Object -First 1
+		}
+		$ChunkGranularity = if ($granularityInfo -and $granularityInfo.SuggestedGranularity) { $granularityInfo.SuggestedGranularity } else { 'Value' }
+	}
+	$bucket = Get-sqmChunkBucketSql -ColumnName $ChunkColumn -DataType $chunkColType -Granularity $ChunkGranularity
+	if ($ChunkGranularity -eq 'Month')
+	{
+		Write-sqmTransferLog -Message "Chunk-Granularitaet Month: ein Chunk pro Kalendermonat von [$ChunkColumn] ($chunkColType), Bucket $($bucket.BucketExpr)." -FunctionName $functionName -Level 'INFO'
 	}
 
 	# --- MaxChunkValues automatisch bestimmen, wenn nicht explizit gesetzt ----------------------
@@ -429,9 +466,10 @@ function Invoke-sqmChunkedTableTransfer
 	# ohne Indexunterstuetzung, weil Indizes fuer den gesamten Lauf deaktiviert sind - bei einer
 	# grossen Tabelle mit hunderten Chunks hat das den RowCount-Anteil zur dominanten Kostenquelle
 	# gemacht, weit vor der eigentlichen Datenkopie.
-	$chunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $bracketed GROUP BY [$ChunkColumn] ORDER BY [$ChunkColumn]"
+	$chunkQuery = "SELECT $($bucket.BucketExpr) AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $bracketed GROUP BY $($bucket.BucketExpr) ORDER BY ChunkValue"
 	$chunkRows = @(Invoke-DbaQuery @srcConnParams -Query $chunkQuery -As PSObject -EnableException -QueryTimeout 3600)
 	$chunkValues = @($chunkRows | Select-Object -ExpandProperty ChunkValue)
+	& $bucket.Validate $chunkValues
 
 	if ($chunkValues.Count -eq 0)
 	{
@@ -459,7 +497,7 @@ function Invoke-sqmChunkedTableTransfer
 		# Die Schaetzung aus der Statistik gegen die jetzt bekannte Wirklichkeit halten. Weicht sie
 		# deutlich ab, ist die Statistik veraltet - das ist keine Stoerung (der Lauf arbeitet mit den
 		# echten Werten weiter), aber es erklaert, warum die GUI vorher eine andere Zahl angezeigt hat.
-		$estimated = $usable[0].EstimatedDistinctValues
+		$estimated = $usable[0].EstimatedChunks
 		if ($null -ne $estimated -and $estimated -gt 0)
 		{
 			$deviation = [math]::Abs($chunkValues.Count - $estimated) / [double]$estimated
@@ -564,7 +602,7 @@ function Invoke-sqmChunkedTableTransfer
 				# dieser GROUP BY-Scan je nach Clustered-Index-Abdeckung potenziell ein voller Scan, der
 				# laenger als 30s dauern kann. Ein Timeout hier darf NICHT einfach als "Ziel ist leer"
 				# behandelt werden (siehe catch unten) - genau das waere der gefaehrliche Default.
-				$dstChunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $dstBracketed GROUP BY [$ChunkColumn]"
+				$dstChunkQuery = "SELECT $($bucket.BucketExpr) AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $dstBracketed GROUP BY $($bucket.BucketExpr)"
 				$dstChunkRows = @(Invoke-DbaQuery @dstConnParams -Query $dstChunkQuery -As PSObject -EnableException -QueryTimeout 3600)
 				foreach ($dr in $dstChunkRows) { $dstCountByChunk[(Format-SqlLiteral $dr.ChunkValue)] = [int64]$dr.Cnt }
 			}
@@ -593,7 +631,8 @@ function Invoke-sqmChunkedTableTransfer
 		{
 			$chunkIndex++
 			$literal = Format-SqlLiteral $chunkValue
-			$chunkLabel = "$ChunkColumn = $literal"
+			$chunkPredicate = & $bucket.Predicate $chunkValue
+			$chunkLabel = if ($ChunkGranularity -eq 'Month') { "$ChunkColumn Monat $chunkValue" } else { "$ChunkColumn = $literal" }
 
 			Write-Progress -Id 3 -Activity "Chunked Transfer: $qualified" -Status "Chunk $chunkIndex von $chunkTotal ($chunkLabel)" `
 							-PercentComplete ([math]::Floor((($chunkIndex - 1) / $chunkTotal) * 100))
@@ -627,7 +666,7 @@ function Invoke-sqmChunkedTableTransfer
 				{
 					try
 					{
-						Invoke-DbaQuery @dstConnParams -Query "DELETE FROM $dstBracketed WHERE [$ChunkColumn] = $literal" -EnableException | Out-Null
+						Invoke-DbaQuery @dstConnParams -Query "DELETE FROM $dstBracketed WHERE $chunkPredicate" -EnableException | Out-Null
 						Write-sqmTransferLog -Message $cleanupAction -FunctionName $functionName -Level 'WARNING'
 						$allResults.Add([PSCustomObject]@{ Table = $qualified; Chunk = "$chunkValue"; Step = 'CleanPartialChunk'; Status = 'Success'; Message = "$dstCount Zeile(n) geloescht vor Neukopie."; Timestamp = (Get-Date) })
 					}
@@ -642,7 +681,7 @@ function Invoke-sqmChunkedTableTransfer
 				}
 			}
 
-			$chunkSql = "SELECT $columnList FROM $bracketed WHERE [$ChunkColumn] = $literal"
+			$chunkSql = "SELECT $columnList FROM $bracketed WHERE $chunkPredicate"
 			$transferParams = @{
 				Source				   = $Source
 				SourceDatabase		   = $SourceDatabase
@@ -699,7 +738,7 @@ function Invoke-sqmChunkedTableTransfer
 			$finalDstCountByChunk = @{}
 			try
 			{
-				$finalDstChunkQuery = "SELECT [$ChunkColumn] AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $dstBracketed GROUP BY [$ChunkColumn]"
+				$finalDstChunkQuery = "SELECT $($bucket.BucketExpr) AS ChunkValue, COUNT_BIG(*) AS Cnt FROM $dstBracketed GROUP BY $($bucket.BucketExpr)"
 				$finalDstChunkRows = @(Invoke-DbaQuery @dstConnParams -Query $finalDstChunkQuery -As PSObject -EnableException -QueryTimeout 3600)
 				foreach ($dr in $finalDstChunkRows) { $finalDstCountByChunk[(Format-SqlLiteral $dr.ChunkValue)] = [int64]$dr.Cnt }
 

@@ -1,4 +1,34 @@
-# sqmDataTransfer — Changelog
+﻿# sqmDataTransfer — Changelog
+
+## [0.1.21.0] — 2026-10-01
+
+### Chunk-Transfer: yyyyMMdd-Spalten werden erkannt und monatsweise gechunkt
+
+Eine int-Spalte mit Tagesdaten im Format yyyyMMdd (z.B. `VTDAT` = 20260115) wurde von
+`Get-sqmChunkColumnCandidate` nicht als Kandidat erkannt: Ganzzahlspalten zaehlten nur mit einem
+Perioden-Namen (Jahr, Monat, Period ...). Und selbst explizit angegeben chunkte
+`Invoke-sqmChunkedTableTransfer` nach jedem einzelnen Wert, also ein Chunk pro TAG - bei Jahren an
+Daten tausende kleine Chunks, oft ueber der Obergrenze MaxChunkValueCeiling.
+
+- `Get-sqmChunkColumnCandidate` erkennt int-/bigint-/char-/varchar-Spalten als Datums-Surrogat,
+  wenn jeder Schluessel ihres Statistik-Histogramms ein gueltiges yyyyMMdd-Datum ist - unabhaengig
+  vom Spaltennamen, weiterhin ohne Tabellenscan. Neue Felder: `SuggestedGranularity`
+  (Value/Month), `EstimatedChunks`, `IsDateSurrogate`. Tagesgenaue Spalten (Surrogate, und
+  Datumsspalten mit deutlich mehr Werten als Monaten) bekommen `Month`.
+- `Invoke-sqmChunkedTableTransfer -ChunkGranularity Auto|Value|Month` (Default Auto = Empfehlung
+  der Kandidatenermittlung, auch bei explizit angegebener `-ChunkColumn`). Month = ein Chunk pro
+  Kalendermonat. Der Chunk-Filter ist ein Bereich auf der nackten Spalte
+  (`VTDAT >= 20260100 AND VTDAT < 20260200`, Datum: `>= '20260101' AND < '20260201'`, Text:
+  `LIKE '202601%'`), damit ein Index auf der Spalte weiter per Seek genutzt werden kann.
+  Month auf einer Spalte ohne yyyyMMdd-Werte bricht mit klarer Meldung ab.
+- Ein Chunk-Wert NULL wird jetzt mit `IS NULL` gefiltert; vorher lief `= NULL` ins Leere und der
+  Chunk blieb stillschweigend leer.
+- GUI: die Erkennung zeigt die Chunk-Anzahl inkl. "(Month)".
+
+Live-verifiziert auf DEV01 (PS 5.1): CORO_DB.dbo.CARCHIVE ohne `-ChunkColumn` -> VTDAT erkannt,
+10 Monats-Chunks statt 300 Tageswerten, 6.001/6.001 Zeilen; Wiederholung ueberspringt alle Chunks;
+nach Teilverlust im Maerz wird nur dieser Monat geleert und neu kopiert. char(8)-yyyyMMdd- und
+date-Spalte ebenfalls monatsweise korrekt, Value-Granularitaet unveraendert.
 
 ## [0.1.19.0] — 2026-07-28
 

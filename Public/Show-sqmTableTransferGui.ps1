@@ -866,7 +866,7 @@ function Show-sqmTableTransferGui
 				{
 					$txtChunkColumn.Text = $best.ColumnName
 					$lblStatus.ForeColor = $cOk
-					$lblStatus.Text = Get-sqmTransferString -Key 'Gui.DetectResult' -FormatArgs @($selected[0], $best.ColumnName, $best.EstimatedDistinctValues, $best.AvgRowsPerChunk)
+					$lblStatus.Text = Get-sqmTransferString -Key 'Gui.DetectResult' -FormatArgs @($selected[0], "$($best.ColumnName)$(if ($best.SuggestedGranularity -eq 'Month') { ' (Month)' })", $best.EstimatedChunks, $best.AvgRowsPerChunk)
 				}
 				else
 				{
