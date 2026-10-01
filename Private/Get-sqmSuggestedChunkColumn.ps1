@@ -69,7 +69,7 @@ ORDER BY c.column_id
 	if ($candidates.Count -eq 0) { return $null }
 
 	# Namenskonventionen, hoechste Prioritaet zuerst - passend zu den Mustern, die im Modul selbst
-	# schon vorkommen (Dat_ReportingDate, dtmStichtag).
+	# schon vorkommen (Dat_ReportDate, dtmReportDate).
 	$patterns = @('stichtag', 'reportingdate', '^dat_', '^dtm', 'datum', 'date')
 	foreach ($pattern in $patterns)
 	{

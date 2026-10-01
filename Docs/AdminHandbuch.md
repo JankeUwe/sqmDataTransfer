@@ -8,6 +8,9 @@ Zielgruppe dieses Handbuchs: SQL-Server-DBAs, die das Modul operativ einsetzen (
 Entwicklung des Moduls selbst). Fuer die Versionshistorie siehe
 [CHANGELOG.md](../CHANGELOG.md), fuer eine Kurzuebersicht [README.md](../README.md).
 
+Stand: 2026-10-01, sqmDataTransfer 0.1.22.0. Seit sqmPartitionTool 1.15.0.0 nutzt auch
+sqmPartitionTool diese Kopier-Engine (Archiv-Migration, neu partitionierte Kopie, Relocation).
+
 ---
 
 ## Inhalt
@@ -149,26 +152,51 @@ Zeilenschluessel.
 **Schritt 1 — Chunk-Spalte bestimmen** (optional manuell, sonst automatisch):
 
 ```powershell
-Get-sqmChunkColumnCandidate -SqlInstance SQL01 -Database Sales -Table dbo.Ergebnis_agg
+Get-sqmChunkColumnCandidate -SqlInstance SQL01 -Database Sales -Table dbo.FactResults
 ```
 
 Bewertet Datums- und Perioden-Spalten nach Namenskonvention (`Stichtag`, `ReportingDate`,
-`Dat_`-/`dtm`-Praefixe zuerst) und schaetzt die Chunk-Anzahl je Kandidat aus dem
+`Dat_`-/`dtm`-Praefixe zuerst). Ebenfalls erkannt werden `INT`-, `BIGINT`-, `CHAR`- und
+`VARCHAR`-Spalten mit Tagesdaten im Format `YYYYMMDD` (z.B. `BOOKDATE` = `20260115`), egal wie sie
+heissen: Kandidat ist eine solche Spalte, wenn jeder Schluessel ihres Statistik-Histogramms ein
+gueltiges Datum ist. Die Funktion schaetzt die Chunk-Anzahl je Kandidat aus dem
 Statistik-Histogramm der Spalte (`sys.dm_db_stats_histogram`) — eine reine
 Metadatenlektuere, die auf einer 344-Millionen-Zeilen-Tabelle dasselbe kostet wie auf einer
 leeren. `-Exact` ersetzt die Schaetzung durch ein echtes `COUNT_BIG(DISTINCT ...)`
 (Vollscan), nur sinnvoll, wenn die Schaetzung nahe an einer Entscheidungsgrenze liegt.
 
+Zusaetzliche Ausgabefelder: `SuggestedGranularity` (`Value` oder `Month`), `EstimatedChunks` und
+`IsDateSurrogate`. Tagesgenaue Spalten (`YYYYMMDD`-Surrogate und Datumsspalten mit deutlich mehr
+Werten als Monaten) bekommen `Month`: ein Chunk pro Kalendermonat statt pro Tag.
+
+**Granularitaet (`-ChunkGranularity`):**
+
+| Wert | Ein Chunk ist | Filter je Chunk |
+|---|---|---|
+| `Auto` (Standard) | Empfehlung von `Get-sqmChunkColumnCandidate`, auch bei explizit angegebener `-ChunkColumn` | wie Value bzw. Month |
+| `Value` | ein einzelner Wert (bisheriges Verhalten) | `[Spalte] = Wert`, bei NULL `[Spalte] IS NULL` |
+| `Month` | ein Kalendermonat | `int`: `[Spalte] >= 20260100 AND [Spalte] < 20260200`; Datum: `>= '20260101' AND < '20260201'`; Text: `LIKE '202601%'` |
+
+Alle Monatsfilter sind Bereiche auf der nackten Spalte, ein Index auf der Chunk-Spalte bleibt also
+per Seek nutzbar. `Month` auf einer Spalte ohne Datumswerte bricht mit klarer Meldung ab. Wichtig
+beim Fortsetzen: einen angefangenen Lauf mit derselben Granularitaet fortsetzen. Wechselt man von
+`Value` auf `Month`, gilt ein teilweise kopierter Monat als Rest und wird geleert und neu kopiert
+(korrekt, kostet aber Zeit).
+
 **Schritt 2 — Transfer starten**, mit oder ohne explizite Chunk-Spalte:
 
 ```powershell
 Invoke-sqmChunkedTableTransfer -Source SQL01 -SourceDatabase Sales -Destination SQL02 `
-    -DestinationDatabase Sales -Table dbo.Ergebnis_agg -ChunkColumn Dat_ReportingDate `
+    -DestinationDatabase Sales -Table dbo.FactResults -ChunkColumn Dat_ReportDate `
     -Confirm:$false
 
 # oder: Chunk-Spalte automatisch ermitteln lassen (ohne -ChunkColumn)
 Invoke-sqmChunkedTableTransfer -Source SQL01 -SourceDatabase Sales -Destination SQL02 `
-    -DestinationDatabase Sales -Table dbo.Ergebnis_agg -Confirm:$false
+    -DestinationDatabase Sales -Table dbo.FactResults -Confirm:$false
+
+# INT-Spalte im Format YYYYMMDD: automatisch ein Chunk pro Monat
+Invoke-sqmChunkedTableTransfer -Source SQL01 -SourceDatabase Sales -Destination SQL01 `
+    -DestinationDatabase SalesArchive -Table dbo.Bookings -ChunkColumn BOOKDATE -Confirm:$false
 ```
 
 Ohne `-ChunkColumn` waehlt die Funktion selbst per `Get-sqmChunkColumnCandidate` und
@@ -205,6 +233,26 @@ Default zu scheitern.
   kann einen einzelnen Batch leicht ueber 300 Sekunden halten; bei einem Chunk-Transfer ist
   das teuer, da ein Chunk ab seiner ersten Zeile neu gestartet wird. Fuer eine unbeaufsichtigte
   Migration ist `0` meist die bessere Wahl.
+- **Abbruch mitten im Chunk:** seit 0.1.22.0 wird die Quellabfrage bei einem Fehler auf dem
+  Server abgebrochen. Vorher wurde der Reader nur geschlossen, was alle restlichen Zeilen des
+  Chunks erst noch liest und verwirft (gemessen: Fehler nach 15.000 von 600.000 Zeilen, Rueckkehr
+  nach 313 s; jetzt nach 5 s).
+
+**Wartezeiten richtig deuten.** SqlBulkCopy liest die Quelle ueber den Client und schreibt ueber
+den Client ins Ziel:
+
+- `ASYNC_NETWORK_IO` an der **lesenden** Session ist normal, solange das Schreiben langsamer ist als
+  das Lesen. Der Engpass zeigt sich an der **schreibenden** Session (`INSERT BULK`): `WRITELOG`
+  bzw. Log-Wachstum (bei FULL Recovery wird jede Zeile protokolliert, Log vorher vergroessern),
+  `PAGEIOLATCH` (Storage), `LCK_M_*` (Blockierung).
+- Den Transfer moeglichst **auf dem SQL-Server-Host** starten; von einer Workstation aus geht jede
+  Zeile zweimal uebers Netz.
+- Waehrend des Transfers **keine Index-Wartung, kein TRUNCATE, kein Partitions-SPLIT** auf der
+  Quelltabelle: die lesende Session haelt eine Schema-Sperre, die wartende DDL blockiert alles
+  dahinter.
+- Ein Diagnose-Skript, das beide Sessions, ihre Wartezeiten, Recovery-Modell und Log-Fuellstand
+  in einem Durchgang ausliest (nur DMVs, kein Tabellenscan), liegt unter
+  `Docs/Diagnose-ChunkTransfer-AsyncNetworkIO.sql`.
 
 **Schritt 4 — Abschluss:** ein einziger konsolidierter `GROUP BY`-Scan auf dem Ziel vergleicht
 alle verarbeiteten Chunks gegen die Ausgangs-Snapshots, statt eines Scans pro Chunk. Ein
@@ -278,7 +326,7 @@ Set-sqmTransferConfig -DefaultBatchSize 250000 -LargeTableRowThreshold 5000000
 |---|---|
 | `Invoke-sqmTableTransfer` | Haupteinstiegspunkt, orchestriert die fuenf Schritte aus Abschnitt 3 fuer eine oder mehrere Tabellen |
 | `Invoke-sqmChunkedTableTransfer` | Fuer sehr grosse Tabellen ohne Primary Key, splittet nach Spalte und transferiert/setzt chunkweise fort |
-| `Get-sqmChunkColumnCandidate` | Bewertet Kandidaten-Chunk-Spalten nach Namenskonvention und geschaetzter Chunk-Anzahl, rein aus Statistik, kein Tabellenscan |
+| `Get-sqmChunkColumnCandidate` | Bewertet Kandidaten-Chunk-Spalten (Datumstypen, Perioden-Namen, `YYYYMMDD`-Surrogate) nach Namenskonvention und geschaetzter Chunk-Anzahl, empfiehlt Monatsgranularitaet fuer tagesgenaue Spalten, rein aus Statistik, kein Tabellenscan |
 | `Sync-sqmTableData` | Gleicht den tatsaechlichen Insert/Update/Delete-Delta einer Tabelle per Staging-Tabelle ab, statt eines vollstaendigen Neu-Copys |
 | `Export-sqmTableSchema` | Scriptet Tabellen-DDL von einer Quellinstanz (SMO Scripter) |
 | `New-sqmTableFromScript` | Fuehrt gescriptete DDL-Batches gegen eine Zielinstanz aus |
@@ -321,7 +369,8 @@ Show-sqmTableTransferGui
    - **Chunk-Transfer** — alle ausgewaehlten Tabellen laufen chunkweise (Ablaufplan B), eine
      Runde je Tabelle. Ein Chunk-Spalten-Feld mit Schaltflaeche "Erkennen" steht zur Verfuegung;
      leer bedeutet automatische Erkennung je Tabelle, eine feste Spalte wird nur uebernommen,
-     wenn genau eine Tabelle ausgewaehlt ist.
+     wenn genau eine Tabelle ausgewaehlt ist. "Erkennen" zeigt die Chunk-Anzahl und bei
+     tagesgenauen Spalten den Zusatz "(Month)"; die Granularitaet waehlt der Transfer automatisch.
 4. **Optionen setzen** — Metadaten scripten, FKs/Indizes deaktivieren/aktivieren, Truncate,
    FKs beim Wiederaktivieren revalidieren, Batchgroesse, Simulieren (`-WhatIf`), bereits
    vollstaendige Tabellen ueberspringen (`-SkipCompleted`, zum Fortsetzen eines unterbrochenen
@@ -343,8 +392,14 @@ Show-sqmTableTransferGui
   `-ChunkColumn` explizit angeben, oder `-Exact` gegen einen Kandidaten pruefen, dessen Schaetzung
   knapp unter der Eignungsschwelle liegt.
 - **"<Spalte> hat mehr Werte als MaxChunkValueCeiling"**: die gewaehlte Spalte ist zu
-  feingranular (naehert sich einem Zeitstempel an) — eine groebere Spalte waehlen, oder
+  feingranular. Bei einer Tagesspalte (Datum oder `YYYYMMDD`) `-ChunkGranularity Month` verwenden
+  (ab 0.1.21.0 automatisch), sonst eine groebere Spalte waehlen oder
   `Set-sqmTransferConfig -MaxChunkValueCeiling` dauerhaft anheben.
+- **Eine `INT`-Datumsspalte wird nicht als Kandidat erkannt** (vor 0.1.21.0 normal): ab 0.1.21.0
+  nur dann nicht, wenn die Spalte keine Statistik hat oder Werte ausserhalb `YYYYMMDD` enthaelt.
+  `-ChunkColumn` explizit angeben.
+- **Ein abgebrochener Chunk-Transfer haengt lange, bevor der Fehler erscheint:** vor 0.1.22.0 wurde
+  der Rest des Chunks noch gelesen. Auf 0.1.22.0 aktualisieren.
 - **"Execution Timeout Expired" mitten in einem Chunk-Transfer**: ein einzelner Batch ist ueber
   `-BulkCopyTimeOut` (Standard 300s) hinaus haengen geblieben (Checkpoint, Autogrowth, IO-
   Konkurrenz auf dem Ziel). `-BulkCopyTimeOut 0` fuer eine unbeaufsichtigte Migration, ggf.

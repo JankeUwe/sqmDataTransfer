@@ -136,7 +136,7 @@ else
 	}
 	catch
 	{
-		# FITS-Fallback: lokaler UNC-Modulpfad, falls PSModulePath nichts findet
+		# Fallback: lokaler UNC-Modulpfad, falls PSModulePath nichts findet
 		$fitsFallback = @(
 			'W:\75084-Datenbanken\MSSQL\SQLSources\Modules',
 			'\\tsclient\W\75084-Datenbanken\MSSQL\SQLSources\Modules'

@@ -184,11 +184,11 @@
 .PARAMETER WhatIf
 
 .EXAMPLE
-    Invoke-sqmChunkedTableTransfer -Source SUEB001IBP -SourceDatabase FXUeberleitung `
-        -Destination SQL02 -DestinationDatabase FXUeberleitung -Table dbo.ACC_ATOM_GUV_PLUS `
-        -ChunkColumn dtmStichtag -Truncate
+    Invoke-sqmChunkedTableTransfer -Source SQL01 -SourceDatabase DWH `
+        -Destination SQL02 -DestinationDatabase DWH -Table dbo.FactPnL `
+        -ChunkColumn dtmReportDate -Truncate
 
-    Transfers ACC_ATOM_GUV_PLUS one Stichtag at a time. If interrupted, re-running the identical
+    Transfers FactPnL one reporting date at a time. If interrupted, re-running the identical
     command (without -Truncate) skips every Stichtag that already matches and only copies the rest.
 
 .EXAMPLE
@@ -200,13 +200,13 @@
     Check the log line "Chunk-Spalte automatisch gewaehlt" to see which column was picked and why.
 
 .EXAMPLE
-    Invoke-sqmChunkedTableTransfer -Source SUEB011IBP -SourceDatabase FXUeberleitung `
-        -Destination SUEB011IBP -DestinationDatabase FXUeberleitung -Table dbo.ACC_ATOM_GUV_PLUS `
-        -DestinationTable dbo.ACC_ATOM_GUV_PLUS_New -ChunkColumn dtmStichtag
+    Invoke-sqmChunkedTableTransfer -Source SQL01 -SourceDatabase DWH `
+        -Destination SQL01 -DestinationDatabase DWH -Table dbo.FactPnL `
+        -DestinationTable dbo.FactPnL_New -ChunkColumn dtmReportDate
 
     Same instance/database, different table name - e.g. loading a freshly re-partitioned '_New'
     copy of the table (already created with its own indexes/partition scheme) before the B6
-    rename-swap cutover. dbo.ACC_ATOM_GUV_PLUS_New must already exist; -ScriptMetadata is not
+    rename-swap cutover. dbo.FactPnL_New must already exist; -ScriptMetadata is not
     supported together with -DestinationTable.
 
 .NOTES
@@ -414,7 +414,7 @@ function Invoke-sqmChunkedTableTransfer
 	# here: a computed column ANYWHERE before the end of the table (not just excluded from the
 	# SELECT list, simply existing earlier in physical column order) silently shifts every later
 	# column's mapping by one position - reproduced against a real 108-column production table
-	# (FXUeberleitung.Ergebnis_agg, computed column at physical position 3) where two unrelated
+	# (DWH.dbo.FactResults, computed column at physical position 3) where two unrelated
 	# columns 12 positions later ended up mapped to each other. Column-count/order reconstruction
 	# on our side was the wrong fix for that; explicit name-based mapping is the correct one - and
 	# doing it ourselves means no dependency on which dbatools version is installed.

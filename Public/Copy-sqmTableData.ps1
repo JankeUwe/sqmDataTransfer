@@ -226,7 +226,7 @@ function Copy-sqmTableData
 				# production hosts that are hard to update), Invoke-sqmDirectBulkCopy drives
 				# SqlBulkCopy directly with the same explicit NAME-based mapping, with no dbatools
 				# version dependency at all. Verified against a real 108-column production table
-				# (FXUeberleitung.Ergebnis_agg) with a computed column at position 3 - reproduced the
+				# (DWH.dbo.FactResults) with a computed column at position 3 - reproduced the
 				# ordinal shift without this, gone with it.
 				try
 				{

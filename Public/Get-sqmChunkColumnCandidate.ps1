@@ -70,7 +70,7 @@
     Reason.
 
 .EXAMPLE
-    Get-sqmChunkColumnCandidate -SqlInstance SQL01 -Database DWH -Table dbo.Ergebnis_agg
+    Get-sqmChunkColumnCandidate -SqlInstance SQL01 -Database DWH -Table dbo.FactResults
 
     Lists the usable chunk columns with the number of chunks each would produce, best first.
 
