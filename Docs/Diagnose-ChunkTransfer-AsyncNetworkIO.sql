@@ -15,7 +15,8 @@
    Index zeigt und die Fragmentierung wirklich die offene Frage ist.
 
    ANWENDUNG
-   Abschnitte 1-8 auf dem ZIEL ausfuehren, Abschnitt 9 auf der QUELLE.
+   Abschnitte 1-8 und 10 auf dem ZIEL ausfuehren (das Skript wechselt per USE selbst in die
+   Zieldatenbank), Abschnitt 9 auf der QUELLE.
    Am besten WAEHREND der Transfer laeuft und der Einbruch bereits sichtbar ist.
    Alle Ergebnisgitter zurueckschicken.
 
@@ -27,6 +28,10 @@
    ============================================================================================ */
 
 SET NOCOUNT ON;
+
+-- Ohne diesen Kontextwechsel liefern OBJECT_ID, sys.dm_db_partition_stats und
+-- sys.dm_db_log_space_usage Werte der aktuellen Datenbank (z.B. master) statt der Zieldatenbank.
+USE [$(ZielDatenbank)];
 
 DECLARE @db     sysname = N'$(ZielDatenbank)';
 DECLARE @schema sysname = N'$(Schema)';
@@ -61,7 +66,7 @@ SELECT  N'2_Indexstruktur' AS Abschnitt,
         i.name                                          AS IndexName,
         i.type_desc                                     AS Typ,
         i.is_disabled                                   AS IstDeaktiviert,
-        i.fill_factor                                   AS FillFactor,
+        i.fill_factor                                   AS Fuellfaktor,
         STUFF((SELECT N', ' + c2.name
                FROM sys.index_columns ic2
                JOIN sys.columns c2 ON c2.object_id = ic2.object_id AND c2.column_id = ic2.column_id
@@ -115,6 +120,45 @@ SELECT  N'3c_Log' AS Abschnitt,
         (SELECT COUNT(*) FROM sys.dm_db_log_info(DB_ID(@db))) AS AnzahlVLF
 FROM sys.dm_db_log_space_usage lsu;
 
+/* Freier Platz auf den Laufwerken der Daten- und Logdateien. Laeuft ein Laufwerk voll, haengt
+   der Bulk-Insert (bzw. bricht mit 1105/9002 ab) - typischerweise erst nach einer bestimmten
+   Datenmenge, also wieder "nach ~100 Mio. Zeilen". */
+SELECT DISTINCT N'3d_Laufwerke' AS Abschnitt,
+        vs.volume_mount_point                         AS Laufwerk,
+        vs.total_bytes     / 1024.0 / 1024 / 1024     AS GesamtGB,
+        vs.available_bytes / 1024.0 / 1024 / 1024     AS FreiGB,
+        CAST(100.0 * vs.available_bytes / NULLIF(vs.total_bytes, 0) AS decimal(5,1)) AS FreiProzent
+FROM sys.master_files mf
+CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.file_id) vs
+WHERE mf.database_id IN (DB_ID(@db), DB_ID(N'tempdb'));
+
+/* Instant File Initialization: ohne IFI muss jedes Wachstum der DATENdatei erst mit Nullen
+   beschrieben werden - bei 1-GB-Schritten und langsamem Storage jedesmal Sekunden bis Minuten,
+   in denen der Insert steht (Wartetyp PREEMPTIVE_OS_WRITEFILEGATHER). Logdateien werden immer
+   genullt, IFI hilft dort nicht (ausser SQL 2022 bis 64 MB). */
+SELECT  N'3e_InstantFileInit' AS Abschnitt, servicename, service_account,
+        instant_file_initialization_enabled
+FROM sys.dm_server_services
+WHERE servicename LIKE N'SQL Server (%';
+
+/* Autogrowth-Ereignisse der letzten Zeit aus dem Default Trace, mit Dauer. Haeufen sich lange
+   Wachstumsvorgaenge genau zu den Zeiten, in denen der Transfer "haengt", ist das die Ursache.
+   Liest nur die Default-Trace-Dateien (wenige MB), keine Nutzdaten. */
+DECLARE @trace nvarchar(260) = (SELECT TOP (1) path FROM sys.traces WHERE is_default = 1);
+IF @trace IS NOT NULL
+    SELECT TOP (50) N'3f_Autogrowth' AS Abschnitt,
+            te.name                          AS Ereignis,
+            t.FileName                       AS Datei,
+            t.StartTime,
+            t.Duration / 1000                AS DauerMs,
+            t.IntegerData * 8 / 1024         AS WachstumMB
+    FROM sys.fn_trace_gettable(REVERSE(SUBSTRING(REVERSE(@trace), CHARINDEX(CHAR(92), REVERSE(@trace)), 260)) + N'log.trc', DEFAULT) t
+    JOIN sys.trace_events te ON te.trace_event_id = t.EventClass
+    WHERE t.EventClass IN (92, 93) AND t.DatabaseName IN (@db, N'tempdb')
+    ORDER BY t.StartTime DESC;
+ELSE
+    SELECT N'3f_Autogrowth' AS Abschnitt, N'Default Trace ist deaktiviert' AS Hinweis;
+
 /* -----------------------------------------------------------------------------------------
    4) OPTIONAL und nur bei Bedarf einschalten: Fragmentierung des Clustered Index.
       LIMITED liest nur die Zwischenebenen, ist aber auf einer Tabelle dieser Groesse trotzdem
@@ -160,6 +204,23 @@ SELECT  N'6b_WartendeTasks' AS Abschnitt,
 FROM sys.dm_os_waiting_tasks wt
 WHERE wt.session_id <> @@SPID;
 
+/* Speicher-Grants: wartet eine Anfrage auf Arbeitsspeicher (RESOURCE_SEMAPHORE), z.B. fuer die
+   Sortierung eines Bulk-Inserts in einen Clustered Index? */
+SELECT  N'6c_SpeicherGrants' AS Abschnitt, mg.session_id, mg.requested_memory_kb, mg.granted_memory_kb,
+        mg.used_memory_kb, mg.wait_time_ms, mg.queue_id, mg.dop
+FROM sys.dm_exec_query_memory_grants mg
+WHERE mg.session_id <> @@SPID;
+
+/* tempdb-Verbrauch je Sitzung (Sortier-Spills, Versionsspeicher). Waechst er mit dem Transfer,
+   laeuft irgendwann tempdb voll. */
+SELECT  N'6d_TempdbJeSitzung' AS Abschnitt, su.session_id,
+        (SUM(su.user_objects_alloc_page_count)     - SUM(su.user_objects_dealloc_page_count))     * 8 / 1024 AS UserObjekteMB,
+        (SUM(su.internal_objects_alloc_page_count) - SUM(su.internal_objects_dealloc_page_count)) * 8 / 1024 AS InterneObjekteMB
+FROM sys.dm_db_task_space_usage su
+WHERE su.session_id <> @@SPID
+GROUP BY su.session_id
+HAVING SUM(su.user_objects_alloc_page_count) + SUM(su.internal_objects_alloc_page_count) > 0;
+
 /* -----------------------------------------------------------------------------------------
    7) Wait-Delta ueber 60 Sekunden - die eigentlich entscheidende Messung
    Kumulative Waits seit Instanzstart sagen bei einem seit Stunden laufenden Transfer nichts.
@@ -169,6 +230,9 @@ WHERE wt.session_id <> @@SPID;
                                           fuer die inzwischen erreichte Tabellengroesse
      ASYNC_NETWORK_IO auf dem ZIEL     -> das Ziel wartet auf den Client, der Engpass liegt davor
      BACKUPIO / BACKUPBUFFER           -> ein paralleles Backup laeuft mit
+     PREEMPTIVE_OS_WRITEFILEGATHER     -> Datei-Wachstum mit Nullschreiben (siehe 3e/3f)
+     RESOURCE_SEMAPHORE                -> Anfrage wartet auf Arbeitsspeicher (siehe 6c)
+     LCK_M_*                           -> Blockierung (siehe 6b, blocking_session_id)
      CXPACKET/CXCONSUMER, SOS_SCHEDULER_YIELD -> CPU-Konkurrenz durch Fremdlast
    Kostet exakt 60 Sekunden Wartezeit und sonst nichts.
    ----------------------------------------------------------------------------------------- */
