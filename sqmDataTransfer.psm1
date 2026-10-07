@@ -137,24 +137,27 @@ else
 	catch
 	{
 		# Fallback: lokaler UNC-Modulpfad, falls PSModulePath nichts findet
+		# Standardpfad seit v0.1.25.0: _SQLAdminTools\Other\Module; SQLSources\Modules nur noch Legacy
 		$fitsFallback = @(
+			'W:\75084-Datenbanken\MSSQL\_SQLAdminTools\Other\Module',
+			'\\tsclient\W\75084-Datenbanken\MSSQL\_SQLAdminTools\Other\Module',
 			'W:\75084-Datenbanken\MSSQL\SQLSources\Modules',
 			'\\tsclient\W\75084-Datenbanken\MSSQL\SQLSources\Modules'
-		) | Where-Object { Test-Path $_ } | Select-Object -First 1
+		) | Where-Object { [IO.Directory]::Exists([IO.Path]::Combine($_, 'dbatools')) } |
+			Select-Object -First 1
 
 		if ($fitsFallback)
 		{
-			$dbaDirs = @(Get-ChildItem -Path $fitsFallback -Directory -Filter 'dbatools*' -ErrorAction SilentlyContinue)
-			if ($dbaDirs.Count -gt 0)
+			# Freigabe nur fuer diese Sitzung vorne in PSModulePath, dann regulaer importieren:
+			# so loest dbatools auch sein RequiredModule dbatools.library von dort auf. (Frueher:
+			# 'dbatools*' absteigend sortiert -> erwischte dbatools.library statt dbatools.)
+			$env:PSModulePath = "$fitsFallback;$env:PSModulePath"
+			try
 			{
-				$dbaDir = ($dbaDirs | Sort-Object Name -Descending | Select-Object -First 1).FullName
-				try
-				{
-					Import-Module $dbaDir -ErrorAction Stop
-					$script:sqmtDbatoolsAvailable = $true
-				}
-				catch { $script:sqmtDbatoolsAvailable = $false }
+				Import-Module dbatools -ErrorAction Stop
+				$script:sqmtDbatoolsAvailable = $true
 			}
+			catch { $script:sqmtDbatoolsAvailable = $false }
 		}
 	}
 }

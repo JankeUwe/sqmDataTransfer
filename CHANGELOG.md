@@ -1,5 +1,16 @@
 ﻿# sqmDataTransfer — Changelog
 
+## [0.1.25.0] — 2026-10-07
+
+### FI-TS: neuer Standardpfad fuer dbatools
+
+- Findet `Import-Module dbatools` nichts, sucht das Modul jetzt zuerst unter
+  `W:\` bzw. `\\tsclient\W\75084-Datenbanken\MSSQL\_SQLAdminTools\Other\Module` (neuer
+  FI-TS-Standardpfad), danach wie bisher unter `...\SQLSources\Modules`.
+- Fix: Der Fallback importierte durch absteigende Sortierung von `dbatools*` den Ordner
+  `dbatools.library` statt `dbatools`. Jetzt: Freigabe fuer die Sitzung in `PSModulePath`,
+  dann `Import-Module dbatools`.
+
 ## [0.1.24.0] — 2026-10-01
 
 ### Fehlgeschlagene Schritte werden mit Ursache ausgegeben, Abweichungen live nachgezaehlt
